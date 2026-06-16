@@ -19,7 +19,7 @@ class MusicPlayerView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         state = self.cog.get_state(self.guild_id)
         if state['session_owner'] and state['session_owner'] != interaction.user.id and not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("Hanya orang yang memutar lagu pertama (atau Admin) yang bisa mengontrol ini.", ephemeral=True)
+            await interaction.response.send_message("Only the person who requested the first track (or an Admin) can control this.", ephemeral=True)
             return False
         return True
 
@@ -66,6 +66,15 @@ class MusicPlayerView(discord.ui.View):
             await interaction.response.send_message("Queue shuffled", ephemeral=True, delete_after=2)
         else:
             await interaction.response.send_message("Not enough tracks to shuffle.", ephemeral=True, delete_after=2)
+
+    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="music_stop")
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        state = self.cog.get_state(self.guild_id)
+        state['queue'].clear()
+        if vc and vc.is_playing():
+            vc.stop()
+        await interaction.response.send_message("Stopped playback and cleared the queue.", ephemeral=True, delete_after=3)
 
 
 class MusicCog(commands.Cog):
@@ -365,7 +374,7 @@ class MusicCog(commands.Cog):
     async def pause(self, ctx: commands.Context):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
-            return await ctx.send("Hanya orang yang pertama kali memutar lagu (atau Admin) yang bisa mengontrol bot.")
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         vc = ctx.guild.voice_client
         if vc and vc.is_playing():
             vc.pause()
@@ -378,7 +387,7 @@ class MusicCog(commands.Cog):
     async def resume(self, ctx: commands.Context):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
-            return await ctx.send("Hanya orang yang pertama kali memutar lagu (atau Admin) yang bisa mengontrol bot.")
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         vc = ctx.guild.voice_client
         if vc and vc.is_paused():
             vc.resume()
@@ -393,7 +402,7 @@ class MusicCog(commands.Cog):
     async def skip(self, ctx: commands.Context):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
-            return await ctx.send("Hanya orang yang pertama kali memutar lagu (atau Admin) yang bisa mengontrol bot.")
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         vc = ctx.guild.voice_client
         if vc and vc.is_playing():
             vc.stop()
@@ -405,7 +414,7 @@ class MusicCog(commands.Cog):
     async def forward(self, ctx: commands.Context, seconds: int = 5):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
-            return await ctx.send("Hanya orang yang pertama kali memutar lagu (atau Admin) yang bisa mengontrol bot.")
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         current_elapsed = self.get_elapsed(state)
         await ctx.send(f"Forwarding {seconds} seconds...")
         await self.execute_seek_signal(ctx.guild.id, ctx.channel, current_elapsed + seconds)
@@ -414,7 +423,7 @@ class MusicCog(commands.Cog):
     async def back(self, ctx: commands.Context, seconds: int = 5):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
-            return await ctx.send("Hanya orang yang pertama kali memutar lagu (atau Admin) yang bisa mengontrol bot.")
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         current_elapsed = self.get_elapsed(state)
         await ctx.send(f"Going back {seconds} seconds...")
         await self.execute_seek_signal(ctx.guild.id, ctx.channel, current_elapsed - seconds)
@@ -423,7 +432,7 @@ class MusicCog(commands.Cog):
     async def seek(self, ctx: commands.Context, time_input: str):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
-            return await ctx.send("Hanya orang yang pertama kali memutar lagu (atau Admin) yang bisa mengontrol bot.")
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         try:
             target_seconds = self.parse_time(time_input)
             await ctx.send(f"Seeking to {time_input}...")
@@ -435,7 +444,7 @@ class MusicCog(commands.Cog):
     async def drop(self, ctx: commands.Context, index: int):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
-            return await ctx.send("Hanya orang yang pertama kali memutar lagu (atau Admin) yang bisa mengontrol bot.")
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         queue = state['queue']
         target_index = index - 1
         
@@ -453,7 +462,7 @@ class MusicCog(commands.Cog):
     async def volume(self, ctx: commands.Context, level: int):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
-            return await ctx.send("Hanya orang yang pertama kali memutar lagu (atau Admin) yang bisa mengontrol bot.")
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         if level < 1 or level > 100:
             return await ctx.send("Volume must be between 1 and 100.")
         
@@ -470,7 +479,7 @@ class MusicCog(commands.Cog):
     async def shuffle(self, ctx: commands.Context):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
-            return await ctx.send("Hanya orang yang pertama kali memutar lagu (atau Admin) yang bisa mengontrol bot.")
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         if len(state['queue']) > 1:
             random.shuffle(state['queue'])
             await ctx.send("Queue shuffled.")
@@ -481,7 +490,7 @@ class MusicCog(commands.Cog):
     async def move(self, ctx: commands.Context, from_index: int, to_index: int):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
-            return await ctx.send("Hanya orang yang pertama kali memutar lagu (atau Admin) yang bisa mengontrol bot.")
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         queue = state['queue']
         if not (1 <= from_index <= len(queue)) or not (1 <= to_index <= len(queue)):
             return await ctx.send("Invalid index.")
@@ -556,7 +565,7 @@ class MusicCog(commands.Cog):
     async def quit(self, ctx: commands.Context):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
-            return await ctx.send("Hanya orang yang pertama kali memutar lagu (atau Admin) yang bisa mengontrol bot.")
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         vc = ctx.guild.voice_client
         if vc and vc.is_connected():
             await vc.disconnect()
@@ -568,9 +577,20 @@ class MusicCog(commands.Cog):
     async def clear(self, ctx: commands.Context):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
-            return await ctx.send("Hanya orang yang pertama kali memutar lagu (atau Admin) yang bisa mengontrol bot.")
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         state['queue'].clear()
         await ctx.send("Queue has been cleared.")
+
+    @commands.command(name="stop", help="Stops playback and clears the queue")
+    async def stop(self, ctx: commands.Context):
+        state = self.get_state(ctx.guild.id)
+        if not self.is_dj(ctx.author, state):
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
+        state['queue'].clear()
+        vc = ctx.guild.voice_client
+        if vc and vc.is_playing():
+            vc.stop()
+        await ctx.send("Playback stopped and queue cleared.")
 
     @commands.command(name="help", help="Displays a list of available commands")
     async def help_command(self, ctx: commands.Context):
@@ -583,6 +603,7 @@ class MusicCog(commands.Cog):
         embed.add_field(name="▶️ `!play <query/url>`", value="Plays a track or playlist.", inline=False)
         embed.add_field(name="🎵 `!player` (or `!np`)", value="Displays the currently playing track.", inline=False)
         embed.add_field(name="⏸️ `!pause` & ▶️ `!resume`", value="Pauses and resumes playback.", inline=False)
+        embed.add_field(name="⏹️ `!stop`", value="Stops playback and clears the queue.", inline=False)
         embed.add_field(name="⏭️ `!skip`", value="Skips the currently playing track.", inline=False)
         embed.add_field(name="⏩ `!forward <seconds>` & ⏪ `!back <seconds>`", value="Skips audio forward/backward (Default: 5 sec).", inline=False)
         embed.add_field(name="⏱️ `!seek <time>`", value="Jumps to a specific time (Example: `!seek 01:30`).", inline=False)
