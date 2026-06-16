@@ -52,7 +52,9 @@ class MusicPlayerView(discord.ui.View):
     @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.primary, custom_id="music_skip")
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         vc = interaction.guild.voice_client
+        state = self.cog.get_state(self.guild_id)
         if vc and vc.is_playing():
+            state['is_skipping'] = True
             vc.stop()
             await interaction.response.send_message("Skipped", ephemeral=True, delete_after=2)
         else:
@@ -88,6 +90,10 @@ class MusicCog(commands.Cog):
             self.guild_states[guild_id] = {
                 'queue': [],
                 'current_track': None,
+                'previous_track': None,
+                'loop': False,
+                'loopqueue': False,
+                'is_skipping': False,
                 'stream_url': None,
                 'start_time': 0,
                 'paused_time': 0,
@@ -151,7 +157,7 @@ class MusicCog(commands.Cog):
         return f"▶︎ {bar}"
 
     async def inactivity_timeout(self, guild_id, vc):
-        await asyncio.get_event_loop().create_task(asyncio.sleep(60))
+        await asyncio.get_event_loop().create_task(asyncio.sleep(120))
         if vc and not vc.is_playing():
             await vc.disconnect()
             state = self.guild_states.get(guild_id)
@@ -186,6 +192,17 @@ class MusicCog(commands.Cog):
             state['is_seeking'] = False
             await self.play_current_seek(guild_id, channel)
         else:
+            current_track = state['current_track']
+            if current_track:
+                state['previous_track'] = current_track
+                
+                if state.get('is_skipping'):
+                    state['is_skipping'] = False
+                else:
+                    if state.get('loop'):
+                        state['queue'].insert(0, current_track)
+                    elif state.get('loopqueue'):
+                        state['queue'].append(current_track)
             await self.play_next(guild_id, channel)
 
     async def play_next(self, guild_id, channel):
@@ -317,7 +334,7 @@ class MusicCog(commands.Cog):
         
         vc.stop()
 
-    @commands.command(name="play", help="Plays a track or playlist from YouTube")
+    @commands.command(name="play", aliases=["p"], help="Plays audio from a YouTube query or URLs separated by space")
     async def play(self, ctx: commands.Context, *, search: str):
         if not ctx.author.voice:
             return await ctx.send("Connection rejected: You must be in a Voice Channel.")
@@ -331,44 +348,62 @@ class MusicCog(commands.Cog):
 
         state['bound_channel'] = ctx.channel
 
-        try:
-            if "http" in search:
-                query = search
+        parts = search.split()
+        if len(parts) > 1 and all(p.startswith("http://") or p.startswith("https://") for p in parts):
+            if len(parts) > 5:
+                await ctx.send("Limit exceeded: You can only batch add up to 5 URLs at a time. Only the first 5 will be processed.")
+                queries = parts[:5]
             else:
-                query = f"ytsearch:{search}"
+                queries = parts
+        else:
+            queries = [search]
 
-            data = await self.bot.loop.run_in_executor(
-                None, lambda: ytdl_search.extract_info(query, download=False)
-            )
-            
-            if 'entries' in data:
-                entries = [entry for entry in list(data['entries']) if entry]
-                if not entries:
-                    return await ctx.send("No results found.")
-                if "ytsearch:" in query:
-                    entries = [entries[0]]
-                
-                for entry in entries:
-                    webpage_url = entry.get('url') or entry.get('webpage_url')
-                    state['queue'].append({'webpage_url': webpage_url, 'title': entry.get('title')})
-                if len(entries) > 1:
-                    await ctx.send(f"Indexed {len(entries)} tracks into the queue.")
+        added_count = 0
+        added_titles = []
+        for q in queries:
+            try:
+                if "http" in q:
+                    query = q
                 else:
-                    await ctx.send(f"Indexed **{entries[0].get('title')}** into the queue.")
-            else:
-                webpage_url = data.get('webpage_url') or data.get('original_url')
-                state['queue'].append({'webpage_url': webpage_url, 'title': data.get('title')})
-                await ctx.send(f"Indexed **{data.get('title')}** into the queue.")
+                    query = f"ytsearch:{q}"
 
-            self.cancel_timeout(ctx.guild.id)
+                data = await self.bot.loop.run_in_executor(
+                    None, lambda: ytdl_search.extract_info(query, download=False)
+                )
+                
+                if 'entries' in data:
+                    entries = [entry for entry in list(data['entries']) if entry]
+                    if not entries:
+                        continue
+                    if "ytsearch:" in query:
+                        entries = [entries[0]]
+                    
+                    for entry in entries:
+                        webpage_url = entry.get('url') or entry.get('webpage_url')
+                        state['queue'].append({'webpage_url': webpage_url, 'title': entry.get('title')})
+                        added_titles.append(entry.get('title'))
+                    added_count += len(entries)
+                else:
+                    webpage_url = data.get('webpage_url') or data.get('original_url')
+                    state['queue'].append({'webpage_url': webpage_url, 'title': data.get('title')})
+                    added_titles.append(data.get('title'))
+                    added_count += 1
+            except Exception as e:
+                await ctx.send(f"Failed to index '{q}': {str(e)}")
 
-            if not vc.is_playing() and not vc.is_paused():
-                await self.play_next(ctx.guild.id, ctx.channel)
-            else:
-                asyncio.create_task(self.prefetch_next(ctx.guild.id))
+        if added_count > 1:
+            await ctx.send(f"Indexed {added_count} tracks into the queue.")
+        elif added_count == 1:
+            await ctx.send(f"Indexed **{added_titles[0]}** into the queue.")
+        elif added_count == 0:
+            await ctx.send("No results found.")
 
-        except Exception as e:
-            await ctx.send(f"Indexing failure: {str(e)}")
+        self.cancel_timeout(ctx.guild.id)
+
+        if not vc.is_playing() and not vc.is_paused() and added_count > 0:
+            await self.play_next(ctx.guild.id, ctx.channel)
+        elif added_count > 0:
+            asyncio.create_task(self.prefetch_next(ctx.guild.id))
 
     @commands.command(name="pause", help="Pauses current playback")
     async def pause(self, ctx: commands.Context):
@@ -405,6 +440,7 @@ class MusicCog(commands.Cog):
             return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         vc = ctx.guild.voice_client
         if vc and vc.is_playing():
+            state['is_skipping'] = True
             vc.stop()
             await ctx.send("Track skipped.")
         else:
@@ -440,23 +476,51 @@ class MusicCog(commands.Cog):
         except ValueError:
             await ctx.send("Wrong time format. Use second number (e.g. `90`) or format `MM:SS` (e.g. `02:30`).")
 
-    @commands.command(name="drop", help="Removes a track from the queue")
-    async def drop(self, ctx: commands.Context, index: int):
+    @commands.command(name="drop", help="Removes a track or multiple tracks from the queue (e.g., 1,3,5-7)")
+    async def drop(self, ctx: commands.Context, *, drop_input: str):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
             return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         queue = state['queue']
-        target_index = index - 1
         
-        if 0 <= target_index < len(queue):
-            removed = queue.pop(target_index)
-            await ctx.send(f"Dropped **{removed['title']}** from the queue.")
-            vc = ctx.guild.voice_client
-            if len(queue) == 0 and vc and not vc.is_playing():
-                if ctx.guild.id not in self.disconnect_tasks:
-                    self.disconnect_tasks[ctx.guild.id] = self.bot.loop.create_task(self.inactivity_timeout(ctx.guild.id, vc))
+        indices_to_drop = set()
+        parts = drop_input.split(',')
+        for part in parts:
+            part = part.strip()
+            if not part: continue
+            if '-' in part:
+                try:
+                    start, end = map(int, part.split('-'))
+                    if start <= end:
+                        for i in range(start, end + 1):
+                            indices_to_drop.add(i - 1)
+                except ValueError:
+                    pass
+            else:
+                try:
+                    indices_to_drop.add(int(part) - 1)
+                except ValueError:
+                    pass
+                    
+        valid_indices = sorted([i for i in indices_to_drop if 0 <= i < len(queue)], reverse=True)
+        
+        if not valid_indices:
+            return await ctx.send("No valid indices provided. Use `!queue` to verify track positions.")
+            
+        dropped_titles = []
+        for i in valid_indices:
+            item = queue.pop(i)
+            dropped_titles.append(item['title'])
+            
+        if len(dropped_titles) == 1:
+            await ctx.send(f"Dropped **{dropped_titles[0]}** from the queue.")
         else:
-            await ctx.send("Invalid index. Use `!queue` to verify track positions.")
+            await ctx.send(f"Dropped {len(dropped_titles)} tracks from the queue.")
+
+        vc = ctx.guild.voice_client
+        if len(queue) == 0 and vc and not vc.is_playing():
+            if ctx.guild.id not in self.disconnect_tasks:
+                self.disconnect_tasks[ctx.guild.id] = self.bot.loop.create_task(self.inactivity_timeout(ctx.guild.id, vc))
 
     @commands.command(name="volume", help="Sets the playback volume (1-100)")
     async def volume(self, ctx: commands.Context, level: int):
@@ -592,7 +656,7 @@ class MusicCog(commands.Cog):
             vc.stop()
         await ctx.send("Playback stopped and queue cleared.")
 
-    @commands.command(name="transfer", aliases=["dj"], help="Transfers the DJ role to another user")
+    @commands.command(name="transfer", help="Transfers the DJ role to another user")
     async def transfer(self, ctx: commands.Context, target: discord.Member):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
@@ -611,6 +675,59 @@ class MusicCog(commands.Cog):
         state['session_owner'] = target.id
         await ctx.send(f"The DJ role has been transferred to {target.mention}!")
 
+    @commands.command(name="dj", help="Shows the current DJ")
+    async def show_dj(self, ctx: commands.Context):
+        state = self.get_state(ctx.guild.id)
+        owner_id = state.get('session_owner')
+        if owner_id:
+            await ctx.send(f"👑 The current DJ is <@{owner_id}>.")
+        else:
+            await ctx.send("There is no DJ currently.")
+
+    @commands.command(name="loop", help="Toggles looping for the current track")
+    async def loop(self, ctx: commands.Context):
+        state = self.get_state(ctx.guild.id)
+        if not self.is_dj(ctx.author, state):
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
+        state['loop'] = not state.get('loop', False)
+        if state['loop']:
+            state['loopqueue'] = False
+            await ctx.send("🔁 **Loop is now ON** for the current track.")
+        else:
+            await ctx.send("🔁 **Loop is now OFF**.")
+
+    @commands.command(name="loopqueue", aliases=["lq"], help="Toggles looping for the entire queue")
+    async def loopqueue(self, ctx: commands.Context):
+        state = self.get_state(ctx.guild.id)
+        if not self.is_dj(ctx.author, state):
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
+        state['loopqueue'] = not state.get('loopqueue', False)
+        if state['loopqueue']:
+            state['loop'] = False
+            await ctx.send("🔁 **Queue Loop is now ON**.")
+        else:
+            await ctx.send("🔁 **Queue Loop is now OFF**.")
+
+    @commands.command(name="replay", aliases=["previous"], help="Replays the previously played track")
+    async def replay(self, ctx: commands.Context):
+        state = self.get_state(ctx.guild.id)
+        if not self.is_dj(ctx.author, state):
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
+        
+        if not state.get('previous_track'):
+            return await ctx.send("There is no previously played track.")
+            
+        state['queue'].insert(0, state['previous_track'])
+        
+        vc = ctx.guild.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            state['is_skipping'] = True
+            vc.stop()
+            await ctx.send(f"Replaying **{state['previous_track']['title']}**...")
+        else:
+            await ctx.send(f"Replaying **{state['previous_track']['title']}**...")
+            await self.play_next(ctx.guild.id, ctx.channel)
+
     @commands.command(name="help", help="Displays a list of available commands")
     async def help_command(self, ctx: commands.Context):
         embed = discord.Embed(
@@ -625,12 +742,14 @@ class MusicCog(commands.Cog):
         embed.add_field(name="⏹️ `!stop`", value="Stops playback and clears the queue.", inline=False)
         embed.add_field(name="⏭️ `!skip`", value="Skips the currently playing track.", inline=False)
         embed.add_field(name="⏩ `!forward <seconds>` & ⏪ `!back <seconds>`", value="Skips audio forward/backward (Default: 5 sec).", inline=False)
+        embed.add_field(name="🔁 `!loop` & `!loopqueue`", value="Toggles loop for current track / entire queue.", inline=False)
+        embed.add_field(name="⏪ `!replay`", value="Replays the previously played track.", inline=False)
         embed.add_field(name="⏱️ `!seek <time>`", value="Jumps to a specific time (Example: `!seek 01:30`).", inline=False)
         embed.add_field(name="📜 `!queue`", value="Displays the music queue.", inline=False)
-        embed.add_field(name="🗑️ `!drop <index>` &  🧹 `!clear`", value="Removes a specific track / Clears the entire queue.", inline=False)
+        embed.add_field(name="🗑️ `!drop <indices>`", value="Removes tracks (e.g., `1,3,5-7`) / `!clear` empties it.", inline=False)
         embed.add_field(name="🔀 `!shuffle` &  🔄 `!move <from> <to>`", value="Shuffles the queue or moves a track's position.", inline=False)
         embed.add_field(name="🔊 `!volume <1-100>`", value="Adjusts the playback volume.", inline=False)
-        embed.add_field(name="👑 `!transfer <@user>`", value="Transfers the DJ role to another user.", inline=False)
+        embed.add_field(name="👑 `!dj` & `!transfer <@user>`", value="Shows the current DJ or transfers the role.", inline=False)
         embed.add_field(name="🚪 `!quit`", value="Disconnects the bot from the voice channel.", inline=False)
         
         embed.set_footer(text="Note: The bot will automatically disconnect if you leave it alone in the channel.")
