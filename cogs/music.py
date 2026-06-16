@@ -592,6 +592,25 @@ class MusicCog(commands.Cog):
             vc.stop()
         await ctx.send("Playback stopped and queue cleared.")
 
+    @commands.command(name="transfer", aliases=["dj"], help="Transfers the DJ role to another user")
+    async def transfer(self, ctx: commands.Context, target: discord.Member):
+        state = self.get_state(ctx.guild.id)
+        if not self.is_dj(ctx.author, state):
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
+            
+        vc = ctx.guild.voice_client
+        if not vc or not vc.is_connected():
+            return await ctx.send("The bot is not connected to a voice channel.")
+            
+        if target not in vc.channel.members:
+            return await ctx.send(f"{target.display_name} is not in the voice channel.")
+            
+        if target.bot:
+            return await ctx.send("You cannot transfer the DJ role to a bot.")
+            
+        state['session_owner'] = target.id
+        await ctx.send(f"The DJ role has been transferred to {target.mention}!")
+
     @commands.command(name="help", help="Displays a list of available commands")
     async def help_command(self, ctx: commands.Context):
         embed = discord.Embed(
@@ -611,6 +630,7 @@ class MusicCog(commands.Cog):
         embed.add_field(name="🗑️ `!drop <index>` &  🧹 `!clear`", value="Removes a specific track / Clears the entire queue.", inline=False)
         embed.add_field(name="🔀 `!shuffle` &  🔄 `!move <from> <to>`", value="Shuffles the queue or moves a track's position.", inline=False)
         embed.add_field(name="🔊 `!volume <1-100>`", value="Adjusts the playback volume.", inline=False)
+        embed.add_field(name="👑 `!transfer <@user>`", value="Transfers the DJ role to another user.", inline=False)
         embed.add_field(name="🚪 `!quit`", value="Disconnects the bot from the voice channel.", inline=False)
         
         embed.set_footer(text="Note: The bot will automatically disconnect if you leave it alone in the channel.")
@@ -625,7 +645,7 @@ class MusicCog(commands.Cog):
                     self.guild_states.pop(guild_id, None)
                 self.cancel_timeout(guild_id)
         else:
-            if before.channel is not None:
+            if before.channel is not None and (after.channel is None or after.channel != before.channel):
                 bot_member = before.channel.guild.me
                 if bot_member in before.channel.members:
                     non_bots = [m for m in before.channel.members if not m.bot]
@@ -633,6 +653,13 @@ class MusicCog(commands.Cog):
                         vc = before.channel.guild.voice_client
                         if vc and vc.is_connected():
                             await vc.disconnect()
+                    else:
+                        state = self.guild_states.get(before.channel.guild.id)
+                        if state and state.get('session_owner') == member.id:
+                            new_owner = non_bots[0]
+                            state['session_owner'] = new_owner.id
+                            if state.get('bound_channel'):
+                                asyncio.create_task(state['bound_channel'].send(f"The previous DJ left. **{new_owner.display_name}** is now the DJ!"))
 
 async def setup(bot):
     await bot.add_cog(MusicCog(bot))
