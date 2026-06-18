@@ -10,74 +10,28 @@ from config import YTDL_SEARCH_OPTIONS, YTDL_STREAM_OPTIONS, FFMPEG_OPTIONS
 ytdl_search = yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS)
 ytdl_stream = yt_dlp.YoutubeDL(YTDL_STREAM_OPTIONS)
 
-class MusicPlayerView(discord.ui.View):
-    def __init__(self, cog, guild_id):
-        super().__init__(timeout=None)
-        self.cog = cog
-        self.guild_id = guild_id
+class PaginatorView(discord.ui.View):
+    def __init__(self, embeds):
+        super().__init__(timeout=180)
+        self.embeds = embeds
+        self.current_page = 0
+        self.update_buttons()
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        state = self.cog.get_state(self.guild_id)
-        if state['session_owner'] and state['session_owner'] != interaction.user.id and not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("Only the person who requested the first track (or an Admin) can control this.", ephemeral=True)
-            return False
-        return True
+    def update_buttons(self):
+        self.previous_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page == len(self.embeds) - 1
 
-    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.secondary, custom_id="music_resume")
-    async def resume_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        vc = interaction.guild.voice_client
-        state = self.cog.get_state(self.guild_id)
-        if vc and vc.is_paused():
-            vc.resume()
-            if state['paused_time'] > 0:
-                state['total_paused_duration'] += time.time() - state['paused_time']
-                state['paused_time'] = 0
-            await interaction.response.send_message("Resumed", ephemeral=True, delete_after=2)
-        elif vc and vc.is_playing():
-            await interaction.response.send_message("Already playing.", ephemeral=True, delete_after=2)
-        else:
-            await interaction.response.send_message("Nothing is playing.", ephemeral=True, delete_after=2)
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, custom_id="paginator_prev")
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page -= 1
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.embeds[self.current_page], view=self)
 
-    @discord.ui.button(emoji="⏸️", style=discord.ButtonStyle.secondary, custom_id="music_pause")
-    async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        vc = interaction.guild.voice_client
-        state = self.cog.get_state(self.guild_id)
-        if vc and vc.is_playing():
-            vc.pause()
-            state['paused_time'] = time.time()
-            await interaction.response.send_message("Paused", ephemeral=True, delete_after=2)
-        else:
-            await interaction.response.send_message("Not playing.", ephemeral=True, delete_after=2)
-
-    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.primary, custom_id="music_skip")
-    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        vc = interaction.guild.voice_client
-        state = self.cog.get_state(self.guild_id)
-        if vc and vc.is_playing():
-            state['is_skipping'] = True
-            vc.stop()
-            await interaction.response.send_message("Skipped", ephemeral=True, delete_after=2)
-        else:
-            await interaction.response.send_message("Nothing is playing.", ephemeral=True, delete_after=2)
-
-    @discord.ui.button(emoji="🔀", style=discord.ButtonStyle.success, custom_id="music_shuffle")
-    async def shuffle_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        state = self.cog.get_state(self.guild_id)
-        if len(state['queue']) > 1:
-            random.shuffle(state['queue'])
-            await interaction.response.send_message("Queue shuffled", ephemeral=True, delete_after=2)
-        else:
-            await interaction.response.send_message("Not enough tracks to shuffle.", ephemeral=True, delete_after=2)
-
-    @discord.ui.button(emoji="⏹️", style=discord.ButtonStyle.danger, custom_id="music_stop")
-    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        vc = interaction.guild.voice_client
-        state = self.cog.get_state(self.guild_id)
-        state['queue'].clear()
-        if vc and vc.is_playing():
-            vc.stop()
-        await interaction.response.send_message("Stopped playback and cleared the queue.", ephemeral=True, delete_after=3)
-
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, custom_id="paginator_next")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page += 1
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.embeds[self.current_page], view=self)
 
 class MusicCog(commands.Cog):
     def __init__(self, bot):
@@ -94,6 +48,7 @@ class MusicCog(commands.Cog):
                 'loop': False,
                 'loopqueue': False,
                 'is_skipping': False,
+                'is_replaying': False,
                 'stream_url': None,
                 'start_time': 0,
                 'paused_time': 0,
@@ -135,27 +90,6 @@ class MusicCog(commands.Cog):
             return f"{hrs:02d}:{mins:02d}:{secs:02d}"
         return f"{mins:02d}:{secs:02d}"
 
-    def create_progress_bar(self, elapsed, duration, length=15):
-        if not duration or duration == 0:
-            return "▶︎ 🔘" + "▬" * (length - 1)
-        
-        progress = elapsed / duration
-        if progress > 1.0:
-            progress = 1.0
-            
-        pos = int(progress * length)
-        if pos >= length:
-            pos = length - 1
-            
-        bar = ""
-        for i in range(length):
-            if i == pos:
-                bar += "🔘"
-            else:
-                bar += "▬"
-                
-        return f"▶︎ {bar}"
-
     async def inactivity_timeout(self, guild_id, vc):
         await asyncio.get_event_loop().create_task(asyncio.sleep(120))
         if vc and not vc.is_playing():
@@ -188,16 +122,24 @@ class MusicCog(commands.Cog):
 
     async def play_next_callback(self, guild_id, channel):
         state = self.get_state(guild_id)
-        if state['is_seeking']:
+        if state.get('is_seeking'):
             state['is_seeking'] = False
             await self.play_current_seek(guild_id, channel)
         else:
-            current_track = state['current_track']
+            current_track = state.get('current_track')
             if current_track:
+                old_prev = state.get('previous_track')
                 state['previous_track'] = current_track
                 
                 if state.get('is_skipping'):
                     state['is_skipping'] = False
+                    if state.get('loopqueue'):
+                        state['queue'].append(current_track)
+                elif state.get('is_replaying'):
+                    state['is_replaying'] = False
+                    state['queue'].insert(0, current_track)
+                    if old_prev:
+                        state['queue'].insert(0, old_prev)
                 else:
                     if state.get('loop'):
                         state['queue'].insert(0, current_track)
@@ -238,53 +180,75 @@ class MusicCog(commands.Cog):
 
                 vc.play(source, after=after_playing)
                 
-                # Pre-fetch the next item so there is no delay when this track finishes
                 asyncio.create_task(self.prefetch_next(guild_id))
                 
-                title = data.get('title', item['title'])
+                is_live = data.get('is_live', False)
+                track_name = data.get('track')
+                artist_name = data.get('artist')
+                raw_title = data.get('title', item['title'])
+                
+                if track_name:
+                    title = f"{artist_name} - {track_name}" if artist_name else track_name
+                else:
+                    title = raw_title
+                    
+                if is_live:
+                    title = f"🔴 [LIVE] {title}"
+
                 url = data.get('webpage_url', item['webpage_url'])
-                thumbnail = data.get('thumbnail')
                 uploader = data.get('uploader', 'Unknown Artist')
                 duration = data.get('duration')
                 view_count = data.get('view_count')
-                like_count = data.get('like_count')
+                categories = data.get('categories')
+                genre = categories[0] if categories else "Unknown"
+
+                upload_date = data.get('upload_date')
+                formatted_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}" if upload_date and len(upload_date) == 8 else None
                 
-                # Update current_track with full details for later use
+                all_subs = set(data.get('subtitles', {}).keys()).union(set(data.get('automatic_captions', {}).keys()))
+                target_langs = {'en': 'EN', 'id': 'ID', 'ja': 'JP', 'ko': 'KR'}
+                found_subs = [target_langs[k] for k in target_langs if k in all_subs]
+                subs_str = ", ".join(found_subs) if found_subs else None
+                
                 state['current_track'] = {
                     'webpage_url': url,
                     'title': title,
-                    'thumbnail': thumbnail,
                     'uploader': uploader,
                     'duration': duration,
                     'view_count': view_count,
-                    'like_count': like_count
+                    'genre': genre,
+                    'upload_date': formatted_date,
+                    'subtitles': subs_str,
+                    'is_live': is_live
                 }
                 
-                duration_str = self.format_time(duration) if duration else "Live/Unknown"
-                progress_bar = self.create_progress_bar(0, duration)
+                duration_str = self.format_time(duration) if duration and not is_live else "Live/Unknown"
                 
-                embed = discord.Embed(title="🎵 Now Playing", description=f"[{title}]({url})\n\n`{progress_bar}`", color=discord.Color.from_rgb(255, 105, 180))
-                if thumbnail:
-                    embed.set_thumbnail(url=thumbnail)
+                embed = discord.Embed(title="🎵  Now Playing", description=f"**[{title}]({url})**", color=discord.Color.from_rgb(255, 105, 180))
                 embed.add_field(name="Channel", value=uploader, inline=True)
                 embed.add_field(name="Duration", value=duration_str, inline=True)
                 
                 if view_count:
-                    embed.add_field(name="👁️ Views", value=f"{view_count:,}", inline=True)
-                if like_count:
-                    embed.add_field(name="👍 Likes", value=f"{like_count:,}", inline=True)
+                    embed.add_field(name="Views", value=f"{view_count:,}", inline=True)
                 
-                embed.set_footer(text="Youtube Music Bot", icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
+                if genre and genre != "Unknown":
+                    embed.add_field(name="Genre", value=genre, inline=True)
                 
-                view = MusicPlayerView(self, guild_id)
+                if subs_str:
+                    embed.add_field(name="Subtitles", value=subs_str, inline=True)
+                
+                footer_text = "Outa • Youtube Music Bot"
+                if formatted_date:
+                    footer_text += f" • Uploaded: {formatted_date}"
+                embed.set_footer(text=footer_text, icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
                 
                 if state['now_playing_message']:
                     try:
-                        await state['now_playing_message'].edit(embed=embed, view=view)
+                        await state['now_playing_message'].edit(embed=embed, view=None)
                     except discord.NotFound:
-                        state['now_playing_message'] = await channel.send(embed=embed, view=view)
+                        state['now_playing_message'] = await channel.send(embed=embed)
                 else:
-                    state['now_playing_message'] = await channel.send(embed=embed, view=view)
+                    state['now_playing_message'] = await channel.send(embed=embed)
                 
             except Exception as e:
                 await channel.send(f"Failed to play **{item['title']}**: Skipping...")
@@ -434,15 +398,27 @@ class MusicCog(commands.Cog):
             await ctx.send("Not paused.")
 
     @commands.command(name="skip", help="Skips the current track")
-    async def skip(self, ctx: commands.Context):
+    async def skip(self, ctx: commands.Context, index: int = None):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
             return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         vc = ctx.guild.voice_client
         if vc and vc.is_playing():
+            if index is not None:
+                if index > 1 and index <= len(state['queue']) + 1:
+                    skipped_tracks = state['queue'][:index - 1]
+                    state['queue'] = state['queue'][index - 1:]
+                    if state.get('loopqueue'):
+                        state['queue'].extend(skipped_tracks)
+                    await ctx.send(f"Skipping to track at index {index}.")
+                elif index <= 1:
+                    await ctx.send("Track skipped.")
+                else:
+                    return await ctx.send("Index out of range.")
+            else:
+                await ctx.send("Track skipped.")
             state['is_skipping'] = True
             vc.stop()
-            await ctx.send("Track skipped.")
         else:
             await ctx.send("Not playing.")
 
@@ -572,34 +548,38 @@ class MusicCog(commands.Cog):
         track = state['current_track']
         title = track.get('title', 'Unknown')
         url = track.get('webpage_url', '')
-        thumbnail = track.get('thumbnail')
         uploader = track.get('uploader', 'Unknown Artist')
         duration = track.get('duration')
         view_count = track.get('view_count')
-        like_count = track.get('like_count')
+        genre = track.get('genre', 'Unknown')
+        formatted_date = track.get('upload_date')
+        subs_str = track.get('subtitles')
+        is_live = track.get('is_live', False)
         
-        duration_str = self.format_time(duration) if duration else "Live/Unknown"
+        duration_str = self.format_time(duration) if duration and not is_live else "Live/Unknown"
         elapsed_secs = self.get_elapsed(state)
         elapsed_str = self.format_time(elapsed_secs)
         
-        progress_bar = self.create_progress_bar(elapsed_secs, duration)
-        
-        embed = discord.Embed(title="🎵 Now Playing", description=f"[{title}]({url})\n\n`{progress_bar}`", color=discord.Color.from_rgb(255, 105, 180))
-        if thumbnail:
-            embed.set_thumbnail(url=thumbnail)
+        embed = discord.Embed(title="🎵  Now Playing", description=f"**[{title}]({url})**", color=discord.Color.from_rgb(255, 105, 180))
         
         embed.add_field(name="Channel", value=uploader, inline=True)
         embed.add_field(name="Progress", value=f"{elapsed_str} / {duration_str}", inline=True)
         
         if view_count:
-            embed.add_field(name="👁️ Views", value=f"{view_count:,}", inline=True)
-        if like_count:
-            embed.add_field(name="👍 Likes", value=f"{like_count:,}", inline=True)
+            embed.add_field(name="Views", value=f"{view_count:,}", inline=True)
             
-        embed.set_footer(text="Youtube Music Bot", icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
+        if genre and genre != "Unknown":
+            embed.add_field(name="Genre", value=genre, inline=True)
         
-        view = MusicPlayerView(self, ctx.guild.id)
-        await ctx.send(embed=embed, view=view)
+        if subs_str:
+            embed.add_field(name="Subtitles", value=subs_str, inline=True)
+            
+        footer_text = "Outa • Youtube Music Bot"
+        if formatted_date:
+            footer_text += f" • Uploaded: {formatted_date}"
+        embed.set_footer(text=footer_text, icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
+        
+        await ctx.send(embed=embed)
 
     @commands.command(name="queue", help="Displays the current queue")
     async def queue(self, ctx: commands.Context):
@@ -608,22 +588,36 @@ class MusicCog(commands.Cog):
         if not queue and not state['current_track']:
             return await ctx.send("The queue is currently empty.")
         
-        embed = discord.Embed(title="📜 Music Queue", color=discord.Color.blurple())
+        embeds = []
+        items_per_page = 10
+        total_pages = max(1, (len(queue) + items_per_page - 1) // items_per_page) if queue else 1
         
-        if state['current_track']:
-            embed.add_field(name="Now Playing", value=f"▶️ **{state['current_track']['title']}** ({self.format_time(self.get_elapsed(state))})", inline=False)
+        for page in range(total_pages):
+            embed = discord.Embed(title="📜 Music Queue", color=discord.Color.blurple())
             
-        if queue:
-            queue_str = ""
-            for i, item in enumerate(queue[:10]):
-                queue_str += f"`{i+1}.` {item['title']}\n"
-            if len(queue) > 10:
-                queue_str += f"\n*... and {len(queue) - 10} more tracks*"
-            embed.add_field(name="Up Next", value=queue_str, inline=False)
+            if page == 0 and state['current_track']:
+                embed.add_field(name="Now Playing", value=f"▶️ **{state['current_track']['title']}** ({self.format_time(self.get_elapsed(state))})", inline=False)
+                
+            start_idx = page * items_per_page
+            end_idx = start_idx + items_per_page
+            page_items = queue[start_idx:end_idx]
+            
+            if page_items:
+                queue_str = ""
+                for i, item in enumerate(page_items):
+                    queue_str += f"`{start_idx + i + 1}.` {item['title']}\n"
+                embed.add_field(name="Up Next", value=queue_str, inline=False)
+            elif not queue:
+                embed.add_field(name="Up Next", value="No upcoming tracks.", inline=False)
+                
+            embed.set_footer(text=f"Page {page+1}/{total_pages} | Outa • Youtube Music Bot")
+            embeds.append(embed)
+            
+        if len(embeds) == 1:
+            await ctx.send(embed=embeds[0])
         else:
-            embed.add_field(name="Up Next", value="No upcoming tracks.", inline=False)
-            
-        await ctx.send(embed=embed)
+            view = PaginatorView(embeds)
+            await ctx.send(embed=embeds[0], view=view)
 
     @commands.command(name="quit", aliases=["leave", "disconnect"], help="Disconnects the bot from the voice channel")
     async def quit(self, ctx: commands.Context):
@@ -643,7 +637,8 @@ class MusicCog(commands.Cog):
         if not self.is_dj(ctx.author, state):
             return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         state['queue'].clear()
-        await ctx.send("Queue has been cleared.")
+        state['loopqueue'] = False
+        await ctx.send("Queue has been cleared and queue loop disabled.")
 
     @commands.command(name="stop", help="Stops playback and clears the queue")
     async def stop(self, ctx: commands.Context):
@@ -651,10 +646,13 @@ class MusicCog(commands.Cog):
         if not self.is_dj(ctx.author, state):
             return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         state['queue'].clear()
+        state['loop'] = False
+        state['loopqueue'] = False
+        state['is_skipping'] = True
         vc = ctx.guild.voice_client
         if vc and vc.is_playing():
             vc.stop()
-        await ctx.send("Playback stopped and queue cleared.")
+        await ctx.send("Playback stopped, queue cleared, and loops disabled.")
 
     @commands.command(name="transfer", help="Transfers the DJ role to another user")
     async def transfer(self, ctx: commands.Context, target: discord.Member):
@@ -717,43 +715,95 @@ class MusicCog(commands.Cog):
         if not state.get('previous_track'):
             return await ctx.send("There is no previously played track.")
             
-        state['queue'].insert(0, state['previous_track'])
-        
         vc = ctx.guild.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
-            state['is_skipping'] = True
+            state['is_replaying'] = True
             vc.stop()
             await ctx.send(f"Replaying **{state['previous_track']['title']}**...")
         else:
+            state['queue'].insert(0, state['previous_track'])
             await ctx.send(f"Replaying **{state['previous_track']['title']}**...")
             await self.play_next(ctx.guild.id, ctx.channel)
 
+    @commands.command(name="ping", help="Checks the bot's latency to the server")
+    async def ping(self, ctx: commands.Context):
+        latency = round(self.bot.latency * 1000)
+        
+        if latency < 100:
+            status = f"🟢 Excellent ({latency} ms)"
+        elif latency < 200:
+            status = f"🟡 Good ({latency} ms)"
+        elif latency < 500:
+            status = f"🟠 Fair ({latency} ms)"
+        else:
+            status = f"🔴 Poor ({latency} ms)"
+            
+        embed = discord.Embed(
+            title="🏓 Pong!",
+            description=f"**Status:** {status}",
+            color=discord.Color.green() if latency < 200 else discord.Color.orange() if latency < 500 else discord.Color.red()
+        )
+        embed.set_footer(text="Outa • Youtube Music Bot", icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
+        await ctx.send(embed=embed)
+
+    @commands.command(name="credit", help="Displays the creator of the bot")
+    async def credit(self, ctx: commands.Context):
+        embed = discord.Embed(
+            title="✨ Credits",
+            description="Created with ❤️ by **Vou Aka. Oujisan**\nPowered by the intelligence of **Gemini AI**\n\n🐙 **[GitHub Repository](https://github.com/oujisan/dc-music-bot)**",
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text="Outa • Youtube Music Bot", icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
+        await ctx.send(embed=embed)
+
     @commands.command(name="help", help="Displays a list of available commands")
     async def help_command(self, ctx: commands.Context):
-        embed = discord.Embed(
-            title="🎧 Outa Music Bot",
-            description="List of available commands:",
-            color=discord.Color.blurple()
-        )
+        commands_list = [
+            ("▶️ `!play <query/url>`", "Plays a track or playlist."),
+            ("🎵 `!player` (or `!np`)", "Displays the currently playing track."),
+            ("⏸️ `!pause` & ▶️ `!resume`", "Pauses and resumes playback."),
+            ("⏹️ `!stop`", "Stops playback and clears the queue."),
+            ("⏭️ `!skip [index]`", "Skips current track or skips to index."),
+            ("⏩ `!forward <seconds>` & ⏪ `!back <seconds>`", "Skips audio forward/backward."),
+            ("🔁 `!loop` & `!loopqueue`", "Toggles loop for current track / entire queue."),
+            ("⏪ `!replay`", "Replays the previously played track."),
+            ("⏱️ `!seek <time>`", "Jumps to a specific time (Example: `!seek 01:30`)."),
+            ("📜 `!queue`", "Displays the music queue."),
+            ("🗑️ `!drop <indices>`", "Removes tracks (e.g., `1,3,5-7`) / `!clear` empties it."),
+            ("🔀 `!shuffle` &  🔄 `!move <from> <to>`", "Shuffles or moves a track's position."),
+            ("🔊 `!volume <1-100>`", "Adjusts the playback volume."),
+            ("👑 `!dj` & `!transfer <@user>`", "Shows the current DJ or transfers the role."),
+            ("🏓 `!ping`", "Checks the bot's latency to the server."),
+            ("✨ `!credit`", "Displays the creator of the bot."),
+            ("🚪 `!quit`", "Disconnects the bot from the voice channel.")
+        ]
         
-        embed.add_field(name="▶️ `!play <query/url>`", value="Plays a track or playlist.", inline=False)
-        embed.add_field(name="🎵 `!player` (or `!np`)", value="Displays the currently playing track.", inline=False)
-        embed.add_field(name="⏸️ `!pause` & ▶️ `!resume`", value="Pauses and resumes playback.", inline=False)
-        embed.add_field(name="⏹️ `!stop`", value="Stops playback and clears the queue.", inline=False)
-        embed.add_field(name="⏭️ `!skip`", value="Skips the currently playing track.", inline=False)
-        embed.add_field(name="⏩ `!forward <seconds>` & ⏪ `!back <seconds>`", value="Skips audio forward/backward (Default: 5 sec).", inline=False)
-        embed.add_field(name="🔁 `!loop` & `!loopqueue`", value="Toggles loop for current track / entire queue.", inline=False)
-        embed.add_field(name="⏪ `!replay`", value="Replays the previously played track.", inline=False)
-        embed.add_field(name="⏱️ `!seek <time>`", value="Jumps to a specific time (Example: `!seek 01:30`).", inline=False)
-        embed.add_field(name="📜 `!queue`", value="Displays the music queue.", inline=False)
-        embed.add_field(name="🗑️ `!drop <indices>`", value="Removes tracks (e.g., `1,3,5-7`) / `!clear` empties it.", inline=False)
-        embed.add_field(name="🔀 `!shuffle` &  🔄 `!move <from> <to>`", value="Shuffles the queue or moves a track's position.", inline=False)
-        embed.add_field(name="🔊 `!volume <1-100>`", value="Adjusts the playback volume.", inline=False)
-        embed.add_field(name="👑 `!dj` & `!transfer <@user>`", value="Shows the current DJ or transfers the role.", inline=False)
-        embed.add_field(name="🚪 `!quit`", value="Disconnects the bot from the voice channel.", inline=False)
+        embeds = []
+        items_per_page = 6
+        total_pages = max(1, (len(commands_list) + items_per_page - 1) // items_per_page)
         
-        embed.set_footer(text="Note: The bot will automatically disconnect if you leave it alone in the channel.")
-        await ctx.send(embed=embed)
+        for page in range(total_pages):
+            embed = discord.Embed(
+                title="🎧 Outa Music Bot",
+                description="List of available commands:",
+                color=discord.Color.blurple()
+            )
+            
+            start_idx = page * items_per_page
+            end_idx = start_idx + items_per_page
+            page_items = commands_list[start_idx:end_idx]
+            
+            for name, value in page_items:
+                embed.add_field(name=name, value=value, inline=False)
+                
+            embed.set_footer(text=f"Page {page+1}/{total_pages} | The bot will automatically disconnect if you leave it alone in the channel.")
+            embeds.append(embed)
+            
+        if len(embeds) == 1:
+            await ctx.send(embed=embeds[0])
+        else:
+            view = PaginatorView(embeds)
+            await ctx.send(embed=embeds[0], view=view)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
