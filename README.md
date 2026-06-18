@@ -45,5 +45,9 @@ Alternatively, you can run the bot using Docker via `docker-compose up -d`.
 **Default Prefix**: `!`
 Type `!help` in a Discord channel to view the full list of available commands.
 
+## Upcoming Features (Roadmap)
+- **Equalizer Profiles**: Add support for selecting specific equalizer profiles (presets) to tune audio output.
+- **Track Downloader**: Add commands to download and convert YouTube/YouTube Music tracks into high-quality `.mp3` (audio) or `.mp4` (video) files directly.
+
 ## Changelog
 To see the full history of updates and new features, please check out the [CHANGELOG.md](CHANGELOG.md) file.

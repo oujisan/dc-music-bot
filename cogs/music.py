@@ -43,7 +43,7 @@ AUDIO_FILTERS = {
     "bassboost": "bass=g=20",
     "nightcore": "asetrate=48000*1.25,aresample=48000,atempo=1.0",
     "vaporwave": "asetrate=48000*0.8,aresample=48000,atempo=1.0",
-    "karaoke": "asplit=2[bass][midhigh];[bass]lowpass=f=150[bass_filtered];[midhigh]highpass=f=150,pan=stereo|c0=c0-c1|c1=c0-c1[vocals_removed];[bass_filtered][vocals_removed]amix=inputs=2",
+    "karaoke": "asplit=2[mid_source][side_source];[mid_source]pan=stereo|c0=0.5*c0+0.5*c1|c1=0.5*c0+0.5*c1,equalizer=f=1000:width_type=h:width=3000:g=-25[mid_attenuated];[side_source]pan=stereo|c0=0.5*c0-0.5*c1|c1=-0.5*c0+0.5*c1[side];[mid_attenuated][side]amix=inputs=2:normalize=0",
     "8d": "apulsator=hz=0.08",
     "clear": ""
 }
@@ -325,9 +325,18 @@ class MusicCog(commands.Cog):
                 upload_date = data.get('upload_date')
                 formatted_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}" if upload_date and len(upload_date) == 8 else None
                 
-                all_subs = set(data.get('subtitles', {}).keys()).union(set(data.get('automatic_captions', {}).keys()))
+                subs_data = data.get('subtitles', {})
+                auto_data = data.get('automatic_captions', {})
                 target_langs = {'en': 'EN', 'id': 'ID', 'ja': 'JP', 'ko': 'KR'}
-                found_subs = [target_langs[k] for k in target_langs if k in all_subs]
+                
+                found_subs = []
+                for lang_code, display_name in target_langs.items():
+                    sub_list = subs_data.get(lang_code) or auto_data.get(lang_code)
+                    if sub_list:
+                        # Only count it as found if it has at least one json3 or vtt format
+                        if any(s.get('ext') in ['json3', 'vtt'] for s in sub_list):
+                            found_subs.append(display_name)
+                
                 subs_str = ", ".join(found_subs) if found_subs else None
                 
                 state['current_track'] = {
@@ -933,7 +942,6 @@ class MusicCog(commands.Cog):
         if not sub_list:
             return await ctx.send(f"Subtitle for language `{lang_code}` not found.")
             
-        # Prioritize json3 for easier text extraction, fallback to vtt
         target_sub = next((s for s in sub_list if s.get('ext') == 'json3'), None)
         if not target_sub:
             target_sub = next((s for s in sub_list if s.get('ext') == 'vtt'), None)
@@ -943,7 +951,8 @@ class MusicCog(commands.Cog):
             
         url = target_sub.get('url')
         try:
-            async with aiohttp.ClientSession() as session:
+            headers = state.get('http_headers', {})
+            async with aiohttp.ClientSession(headers=headers) as session:
                 async with session.get(url) as resp:
                     if resp.status != 200:
                         return await ctx.send("Failed to download subtitles.")
@@ -960,13 +969,12 @@ class MusicCog(commands.Cog):
                                 parsed_text += line.strip() + "\n"
                 except Exception:
                     return await ctx.send("Error parsing JSON subtitle.")
-            else: # vtt
+            else:
                 lines = text_data.split('\n')
                 for line in lines:
                     line = line.strip()
                     if not line or line == "WEBVTT" or "-->" in line or line.startswith("Kind:") or line.startswith("Language:"):
                         continue
-                    # Remove html tags
                     line = re.sub(r'<[^>]+>', '', line)
                     if line:
                         parsed_text += line + "\n"
