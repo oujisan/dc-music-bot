@@ -11,10 +11,46 @@ import io
 import re
 from config import YTDL_SEARCH_OPTIONS, YTDL_STREAM_OPTIONS, FFMPEG_OPTIONS
 
-BOT_VERSION = "1.7.0"
+BOT_VERSION = "1.7.1"
 
 ytdl_search = yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS)
 ytdl_stream = yt_dlp.YoutubeDL(YTDL_STREAM_OPTIONS)
+
+def clean_title(title):
+    if not title:
+        return " "
+    invisible_chars = re.compile(r'[\s\u200b-\u200d\u200e\u200f\ufeff\u202a-\u202e\u2060]+')
+    cleaned = invisible_chars.sub('', title)
+    if not cleaned:
+        return " "
+    return title.strip()
+
+def deduplicate_lines(lines):
+    if not lines:
+        return []
+    cleaned = []
+    for line in lines:
+        if cleaned and line == cleaned[-1]:
+            continue
+        if not cleaned:
+            cleaned.append(line)
+            continue
+        prev = cleaned[-1]
+        prev_words = prev.split()
+        curr_words = line.split()
+        max_overlap = min(len(prev_words), len(curr_words))
+        overlap_found = False
+        for k in range(max_overlap, 0, -1):
+            p_slice = [re.sub(r'[^\w]', '', w.lower()) for w in prev_words[-k:]]
+            c_slice = [re.sub(r'[^\w]', '', w.lower()) for w in curr_words[:k]]
+            if p_slice == c_slice and any(w for w in p_slice):
+                merged = prev + " " + " ".join(curr_words[k:])
+                cleaned[-1] = merged.strip()
+                overlap_found = True
+                break
+        if not overlap_found:
+            cleaned.append(line)
+    return cleaned
 
 class PaginatorView(discord.ui.View):
     def __init__(self, embeds):
@@ -228,7 +264,7 @@ class MusicCog(commands.Cog):
                     # Filter to only actual track/video results from YouTube Music search
                     entries = [
                         e for e in entries 
-                        if e.get('title') and ('watch?v=' in (e.get('url') or e.get('webpage_url') or ''))
+                        if (e.get('title') is not None) and ('watch?v=' in (e.get('url') or e.get('webpage_url') or ''))
                     ]
                     if entries:
                         history = state.get('played_history', [])
@@ -236,7 +272,7 @@ class MusicCog(commands.Cog):
                         track = random.choice(unplayed) if unplayed else random.choice(entries)
                         
                         webpage_url = track.get('url') or track.get('webpage_url')
-                        queue.append({'webpage_url': webpage_url, 'title': track.get('title')})
+                        queue.append({'webpage_url': webpage_url, 'title': clean_title(track.get('title'))})
             except Exception:
                 pass
         
@@ -310,6 +346,8 @@ class MusicCog(commands.Cog):
                     title = f"{artist_name} - {track_name}" if artist_name else track_name
                 else:
                     title = raw_title
+                
+                title = clean_title(title)
                     
                 if is_live:
                     title = f"🔴 [LIVE] {title}"
@@ -506,7 +544,7 @@ class MusicCog(commands.Cog):
                         # Only keep entries that are tracks and have a title
                         entries = [
                             entry for entry in entries 
-                            if entry.get('title') and ('watch?v=' in (entry.get('url') or entry.get('webpage_url') or ''))
+                            if (entry.get('title') is not None) and ('watch?v=' in (entry.get('url') or entry.get('webpage_url') or ''))
                         ]
                         if not entries:
                             continue
@@ -514,13 +552,15 @@ class MusicCog(commands.Cog):
                     
                     for entry in entries:
                         webpage_url = entry.get('url') or entry.get('webpage_url')
-                        state['queue'].append({'webpage_url': webpage_url, 'title': entry.get('title')})
-                        added_titles.append(entry.get('title'))
+                        title = clean_title(entry.get('title'))
+                        state['queue'].append({'webpage_url': webpage_url, 'title': title})
+                        added_titles.append(title)
                     added_count += len(entries)
                 else:
                     webpage_url = data.get('webpage_url') or data.get('original_url')
-                    state['queue'].append({'webpage_url': webpage_url, 'title': data.get('title')})
-                    added_titles.append(data.get('title'))
+                    title = clean_title(data.get('title'))
+                    state['queue'].append({'webpage_url': webpage_url, 'title': title})
+                    added_titles.append(title)
                     added_count += 1
             except Exception as e:
                 await ctx.send(f"Failed to index '{q}': {str(e)}")
@@ -958,27 +998,33 @@ class MusicCog(commands.Cog):
                         return await ctx.send("Failed to download subtitles.")
                     text_data = await resp.text()
                     
-            parsed_text = ""
+            lines = []
             if target_sub['ext'] == 'json3':
                 try:
                     json_data = json.loads(text_data)
                     for event in json_data.get("events", []):
                         if "segs" in event:
-                            line = "".join(seg.get("utf8", "") for seg in event["segs"])
-                            if line.strip():
-                                parsed_text += line.strip() + "\n"
+                            line = "".join(seg.get("utf8", "") for seg in event["segs"]).strip()
+                            if line:
+                                for l in line.split('\n'):
+                                    l_strip = l.strip()
+                                    if l_strip:
+                                        lines.append(l_strip)
                 except Exception:
                     return await ctx.send("Error parsing JSON subtitle.")
             else:
-                lines = text_data.split('\n')
-                for line in lines:
+                raw_lines = text_data.split('\n')
+                for line in raw_lines:
                     line = line.strip()
                     if not line or line == "WEBVTT" or "-->" in line or line.startswith("Kind:") or line.startswith("Language:"):
                         continue
-                    line = re.sub(r'<[^>]+>', '', line)
+                    line = re.sub(r'<[^>]+>', '', line).strip()
                     if line:
-                        parsed_text += line + "\n"
+                        lines.append(line)
                         
+            deduped = deduplicate_lines(lines)
+            parsed_text = "\n".join(deduped)
+            
             if not parsed_text.strip():
                 return await ctx.send("Subtitle file is empty.")
                 

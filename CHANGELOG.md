@@ -2,6 +2,11 @@
 
 All notable changes to the **Outa Music Bot** project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [1.7.1] - 2026-06-18
+### Added
+- **Title Sanitization**: Introduced `clean_title` to remove invisible Unicode characters and strip trailing spaces from track titles, ensuring cleaner UI display.
+- **Subtitle Deduplication**: Implemented `deduplicate_lines` to filter out duplicate lines and merge overlapping words/sentences when fetching subtitles via the `!subs` command.
+
 ## [1.7.0] - 2026-06-18
 ### Added
 - **Audio Speed Control**: Added a new `!speed <value>` command to dynamically control the audio playback speed from `0.1x` to `2.0x`. Setting it to `normal` or `clear` resets the speed to `1.0x`.
