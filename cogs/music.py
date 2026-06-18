@@ -879,7 +879,7 @@ class MusicCog(commands.Cog):
                 ("📜 `!queue`", "Displays the music queue."),
                 ("🎵 `!player` (or `!np`)", "Displays the currently playing track."),
                 ("🤖 `!autoplay [genre]`", "Toggles autoplay (optional: specific genre)."),
-                ("🎛️ `!filter <name>`", "Applies an audio filter (e.g. bassboost, clear)."),
+                ("🎛️ `!filter <name>`", "Applies an audio filter (bassboost, nightcore, vaporwave, karaoke, 8d, clear)."),
                 ("🔁 `!loop`", "Toggles loop for current track."),
                 ("🔁 `!loopqueue` (or `!lq`)", "Toggles loop for the entire queue."),
                 ("🗑️ `!drop <indices>`", "Removes specific tracks (e.g., `1,3,5-7`)."),
@@ -902,7 +902,7 @@ class MusicCog(commands.Cog):
         for i, (category, commands) in enumerate(commands_dict.items()):
             embed = discord.Embed(
                 title="🎧 Outa Music Bot",
-                description=f"**{category}**",
+                description=f"\n\n**{category}**",
                 color=discord.Color.blurple()
             )
             
