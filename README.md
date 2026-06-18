@@ -44,3 +44,6 @@ Alternatively, you can run the bot using Docker via `docker-compose up -d`.
 
 **Default Prefix**: `!`
 Type `!help` in a Discord channel to view the full list of available commands.
+
+## Changelog
+To see the full history of updates and new features, please check out the [CHANGELOG.md](CHANGELOG.md) file.
