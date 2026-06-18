@@ -11,6 +11,8 @@ import io
 import re
 from config import YTDL_SEARCH_OPTIONS, YTDL_STREAM_OPTIONS, FFMPEG_OPTIONS
 
+BOT_VERSION = "1.7.0"
+
 ytdl_search = yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS)
 ytdl_stream = yt_dlp.YoutubeDL(YTDL_STREAM_OPTIONS)
 
@@ -41,7 +43,7 @@ AUDIO_FILTERS = {
     "bassboost": "bass=g=20",
     "nightcore": "asetrate=48000*1.25,aresample=48000,atempo=1.0",
     "vaporwave": "asetrate=48000*0.8,aresample=48000,atempo=1.0",
-    "karaoke": "pan=stereo|c0=c0-c1|c1=c1-c0",
+    "karaoke": "asplit=2[bass][midhigh];[bass]lowpass=f=150[bass_filtered];[midhigh]highpass=f=150,pan=stereo|c0=c0-c1|c1=c0-c1[vocals_removed];[bass_filtered][vocals_removed]amix=inputs=2",
     "8d": "apulsator=hz=0.08",
     "clear": ""
 }
@@ -76,7 +78,9 @@ class MusicCog(commands.Cog):
                 'autoplay_query': None,
                 'played_history': [],
                 'current_filter': "clear",
-                'autoplay_failures': 0
+                'autoplay_failures': 0,
+                'speed': 1.0,
+                'http_headers': {}
             }
         return self.guild_states[guild_id]
 
@@ -85,12 +89,26 @@ class MusicCog(commands.Cog):
             return False
         return True
 
+    def get_speed_filter(self, speed: float) -> str:
+        if speed == 1.0:
+            return ""
+        filters = []
+        while speed < 0.5:
+            filters.append("atempo=0.5")
+            speed /= 0.5
+        if speed != 1.0:
+            filters.append(f"atempo={speed:.2f}")
+        return ",".join(filters)
+
     def get_elapsed(self, state):
         if state['start_time'] == 0:
             return 0
+        speed = state.get('speed', 1.0)
         if state['paused_time'] > 0:
-            return state['paused_time'] - state['start_time'] - state['total_paused_duration'] + state['current_seek']
-        return time.time() - state['start_time'] - state['total_paused_duration'] + state['current_seek']
+            real_elapsed = state['paused_time'] - state['start_time'] - state['total_paused_duration']
+        else:
+            real_elapsed = time.time() - state['start_time'] - state['total_paused_duration']
+        return int(real_elapsed * speed + state['current_seek'])
 
     def parse_time(self, time_str: str) -> int:
         if ':' in time_str:
@@ -192,24 +210,33 @@ class MusicCog(commands.Cog):
                     search_query = f"{state['autoplay_query']} music"
                 elif state.get('previous_track'):
                     prev = state['previous_track']
-                    if prev.get('genre') and prev['genre'] != 'Unknown':
-                        search_query = f"{prev['genre']} music"
+                    if prev.get('tags'):
+                        first_tag = prev['tags'].split(',')[0].strip()
+                        search_query = f"{first_tag} music"
                     elif prev.get('uploader') and prev['uploader'] != 'Unknown Artist':
                         search_query = f"{prev['uploader']} mix"
                     else:
                         search_query = f"{prev['title']} mix"
 
+                import urllib.parse
+                query = f"https://music.youtube.com/search?q={urllib.parse.quote(search_query)}"
                 data = await self.bot.loop.run_in_executor(
-                    None, lambda: ytdl_search.extract_info(f"ytsearch10:{search_query}", download=False)
+                    None, lambda: ytdl_search.extract_info(query, download=False)
                 )
                 if 'entries' in data and data['entries']:
                     entries = [e for e in data['entries'] if e]
-                    history = state.get('played_history', [])
-                    unplayed = [e for e in entries if e.get('url', e.get('webpage_url')) not in history]
-                    track = random.choice(unplayed) if unplayed else random.choice(entries)
-                    
-                    webpage_url = track.get('url') or track.get('webpage_url')
-                    queue.append({'webpage_url': webpage_url, 'title': track.get('title')})
+                    # Filter to only actual track/video results from YouTube Music search
+                    entries = [
+                        e for e in entries 
+                        if e.get('title') and ('watch?v=' in (e.get('url') or e.get('webpage_url') or ''))
+                    ]
+                    if entries:
+                        history = state.get('played_history', [])
+                        unplayed = [e for e in entries if e.get('url', e.get('webpage_url')) not in history]
+                        track = random.choice(unplayed) if unplayed else random.choice(entries)
+                        
+                        webpage_url = track.get('url') or track.get('webpage_url')
+                        queue.append({'webpage_url': webpage_url, 'title': track.get('title')})
             except Exception:
                 pass
         
@@ -244,9 +271,19 @@ class MusicCog(commands.Cog):
                     headers_str_escaped = headers_str.replace('"', '\\"')
                     options['before_options'] = f"{options.get('before_options', '')} -headers \"{headers_str_escaped}\""
                 
+                filter_list = []
                 if state.get('current_filter') and state['current_filter'] != "clear":
-                    vf = AUDIO_FILTERS[state['current_filter']]
-                    options['options'] = f"{options.get('options', '')} -filter:a \"{vf}\""
+                    filter_list.append(AUDIO_FILTERS[state['current_filter']])
+                
+                speed = state.get('speed', 1.0)
+                if speed != 1.0:
+                    speed_filter = self.get_speed_filter(speed)
+                    if speed_filter:
+                        filter_list.append(speed_filter)
+                
+                if filter_list:
+                    vf_str = ",".join(filter_list)
+                    options['options'] = f"{options.get('options', '')} -filter:a \"{vf_str}\""
                 
                 source = discord.FFmpegPCMAudio(state['stream_url'], **options)
                 source = discord.PCMVolumeTransformer(source, volume=state['volume'])
@@ -281,8 +318,8 @@ class MusicCog(commands.Cog):
                 uploader = data.get('uploader', 'Unknown Artist')
                 duration = data.get('duration')
                 view_count = data.get('view_count')
-                categories = data.get('categories')
-                genre = categories[0] if categories else "Unknown"
+                tags_list = data.get('tags', [])
+                tags = ", ".join(tags_list[:3]) if tags_list else None
                 thumbnail = data.get('thumbnail', item.get('thumbnail'))
 
                 upload_date = data.get('upload_date')
@@ -299,7 +336,7 @@ class MusicCog(commands.Cog):
                     'uploader': uploader,
                     'duration': duration,
                     'view_count': view_count,
-                    'genre': genre,
+                    'tags': tags,
                     'upload_date': formatted_date,
                     'subtitles': subs_str,
                     'is_live': is_live,
@@ -319,15 +356,12 @@ class MusicCog(commands.Cog):
                 if view_count:
                     embed.add_field(name="Views", value=f"{view_count:,}", inline=True)
                 
-                details = ""
-                if genre and genre != "Unknown":
-                    details += f"**Genre:** {genre}\n"
+                if tags:
+                    embed.add_field(name="Tags", value=tags, inline=True)
                 if subs_str:
-                    details += f"**Subtitles:** {subs_str}\n"
+                    embed.add_field(name="Subtitles", value=subs_str, inline=True)
                 if formatted_date:
-                    details += f"**Uploaded:** {formatted_date}\n"
-                if details:
-                    embed.add_field(name="Details", value=details, inline=True)
+                    embed.add_field(name="Uploaded", value=formatted_date, inline=True)
                 
                 footer_text = "Outa • Youtube Music Bot"
                 embed.set_footer(text=footer_text, icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
@@ -376,9 +410,19 @@ class MusicCog(commands.Cog):
             custom_before = f"{custom_before} -headers \"{headers_str_escaped}\""
         
         options_str = FFMPEG_OPTIONS['options']
+        filter_list = []
         if state.get('current_filter') and state['current_filter'] != "clear":
-            vf = AUDIO_FILTERS[state['current_filter']]
-            options_str = f"{options_str} -filter:a \"{vf}\""
+            filter_list.append(AUDIO_FILTERS[state['current_filter']])
+            
+        speed = state.get('speed', 1.0)
+        if speed != 1.0:
+            speed_filter = self.get_speed_filter(speed)
+            if speed_filter:
+                filter_list.append(speed_filter)
+                
+        if filter_list:
+            vf_str = ",".join(filter_list)
+            options_str = f"{options_str} -filter:a \"{vf_str}\""
             
         source = discord.FFmpegPCMAudio(state['stream_url'], before_options=custom_before, options=options_str)
         source = discord.PCMVolumeTransformer(source, volume=state['volume'])
@@ -438,7 +482,8 @@ class MusicCog(commands.Cog):
                 if "http" in q:
                     query = q
                 else:
-                    query = f"ytsearch:{q}"
+                    import urllib.parse
+                    query = f"https://music.youtube.com/search?q={urllib.parse.quote(q)}"
 
                 data = await self.bot.loop.run_in_executor(
                     None, lambda: ytdl_search.extract_info(query, download=False)
@@ -448,7 +493,14 @@ class MusicCog(commands.Cog):
                     entries = [entry for entry in list(data['entries']) if entry]
                     if not entries:
                         continue
-                    if "ytsearch:" in query:
+                    if "music.youtube.com/search" in query:
+                        # Only keep entries that are tracks and have a title
+                        entries = [
+                            entry for entry in entries 
+                            if entry.get('title') and ('watch?v=' in (entry.get('url') or entry.get('webpage_url') or ''))
+                        ]
+                        if not entries:
+                            continue
                         entries = [entries[0]]
                     
                     for entry in entries:
@@ -660,7 +712,7 @@ class MusicCog(commands.Cog):
         uploader = track.get('uploader', 'Unknown Artist')
         duration = track.get('duration')
         view_count = track.get('view_count')
-        genre = track.get('genre', 'Unknown')
+        tags = track.get('tags')
         formatted_date = track.get('upload_date')
         subs_str = track.get('subtitles')
         is_live = track.get('is_live', False)
@@ -680,15 +732,12 @@ class MusicCog(commands.Cog):
         if view_count:
             embed.add_field(name="Views", value=f"{view_count:,}", inline=True)
             
-        details = ""
-        if genre and genre != "Unknown":
-            details += f"**Genre:** {genre}\n"
+        if tags:
+            embed.add_field(name="Tags", value=tags, inline=True)
         if subs_str:
-            details += f"**Subtitles:** {subs_str}\n"
+            embed.add_field(name="Subtitles", value=subs_str, inline=True)
         if formatted_date:
-            details += f"**Uploaded:** {formatted_date}\n"
-        if details:
-            embed.add_field(name="Details", value=details, inline=True)
+            embed.add_field(name="Uploaded", value=formatted_date, inline=True)
             
         footer_text = "Outa • Youtube Music Bot"
         embed.set_footer(text=footer_text, icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
@@ -931,16 +980,16 @@ class MusicCog(commands.Cog):
         except Exception as e:
             await ctx.send(f"An error occurred while fetching subtitles: {str(e)}")
 
-    @commands.command(name="autoplay", aliases=["ap"], help="Toggles autoplay and sets an optional genre")
-    async def autoplay(self, ctx: commands.Context, *, genre: str = None):
+    @commands.command(name="autoplay", aliases=["ap"], help="Toggles autoplay and sets an optional tag")
+    async def autoplay(self, ctx: commands.Context, *, tag: str = None):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
             return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         
-        if genre:
+        if tag:
             state['autoplay'] = True
-            state['autoplay_query'] = genre
-            await ctx.send(f"🤖 **Autoplay is now ON**. Genre targeted to: `{genre}`")
+            state['autoplay_query'] = tag
+            await ctx.send(f"🤖 **Autoplay is now ON**. Tag targeted to: `{tag}`")
         else:
             state['autoplay'] = not state.get('autoplay', False)
             state['autoplay_query'] = None
@@ -976,11 +1025,36 @@ class MusicCog(commands.Cog):
             current_elapsed = self.get_elapsed(state)
             await self.execute_seek_signal(ctx.guild.id, ctx.channel, current_elapsed)
 
+    @commands.command(name="speed", help="Sets the audio playback speed (0.1 - 2.0) or 'normal'/'clear' to reset")
+    async def speed(self, ctx: commands.Context, speed_input: str = "normal"):
+        state = self.get_state(ctx.guild.id)
+        if not self.is_dj(ctx.author, state):
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
+            
+        speed_input = speed_input.lower()
+        if speed_input in ["normal", "clear"]:
+            state['speed'] = 1.0
+            await ctx.send("⚡ **Speed reset to normal (1.0x)**.")
+        else:
+            try:
+                val = float(speed_input)
+                if val < 0.1 or val > 2.0:
+                    return await ctx.send("❌ Speed must be between 0.1 and 2.0.")
+                state['speed'] = val
+                await ctx.send(f"⚡ **Playback speed set to {val}x**.")
+            except ValueError:
+                return await ctx.send("❌ Invalid speed value. Use a number between 0.1 and 2.0, or 'normal'/'clear'.")
+                
+        vc = ctx.guild.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            current_elapsed = self.get_elapsed(state)
+            await self.execute_seek_signal(ctx.guild.id, ctx.channel, current_elapsed)
+
     @commands.command(name="credit", help="Displays the creator of the bot")
     async def credit(self, ctx: commands.Context):
         embed = discord.Embed(
             title="✨ Credits",
-            description="Created with ❤️ by **Vou Aka. Oujisan**\nPowered by the intelligence of **Gemini AI**\n\n🐙 **[GitHub Repository](https://github.com/oujisan/dc-music-bot)**\n\n🏷️ **Version:** 1.4.0",
+            description=f"Created with ❤️ by **Vou Aka. Oujisan**\nPowered by the intelligence of **Gemini AI**\n\n🐙 **[GitHub Repository](https://github.com/oujisan/dc-music-bot)**\n\n🏷️ **Version:** {BOT_VERSION}",
             color=discord.Color.gold()
         )
         embed.set_footer(text="Outa • Youtube Music Bot", icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
@@ -999,12 +1073,13 @@ class MusicCog(commands.Cog):
                 ("⏩ `!forward <seconds>`", "Skips audio forward by seconds."),
                 ("⏪ `!back <seconds>`", "Skips audio backward by seconds."),
                 ("⏱️ `!seek <time>`", "Jumps to a specific time (e.g. `01:30`)."),
-                ("🔊 `!volume <1-100>`", "Adjusts the playback volume.")
+                ("🔊 `!volume <1-100>`", "Adjusts the playback volume."),
+                ("⚡ `!speed <value>`", "Sets the audio speed (0.1 - 2.0) or 'normal'/'clear'.")
             ],
             "📜 Queue Management": [
                 ("📜 `!queue`", "Displays the music queue."),
                 ("🎵 `!player` (or `!np`)", "Displays the currently playing track."),
-                ("🤖 `!autoplay [genre]`", "Toggles autoplay (optional: specific genre)."),
+                ("🤖 `!autoplay [tag]`", "Toggles autoplay (optional: specific tag)."),
                 ("🎛️ `!filter <name>`", "Applies an audio filter (bassboost, nightcore, vaporwave, karaoke, 8d, clear)."),
                 ("🔁 `!loop`", "Toggles loop for current track."),
                 ("🔁 `!loopqueue` (or `!lq`)", "Toggles loop for the entire queue."),

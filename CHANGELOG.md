@@ -2,6 +2,33 @@
 
 All notable changes to the **Outa Music Bot** project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [1.7.0] - 2026-06-18
+### Added
+- **Audio Speed Control**: Added a new `!speed <value>` command to dynamically control the audio playback speed from `0.1x` to `2.0x`. Setting it to `normal` or `clear` resets the speed to `1.0x`.
+- **Chained FFmpeg Filters**: Modified the audio filter system to combine speed adjustments with active audio filters (like bassboost or nightcore) smoothly using FFmpeg filter chains.
+- **Speed-Aware Playback Tracker**: Recalibrated the track progress bar (`get_elapsed`) to accurately track time based on the active speed setting.
+
+## [1.6.2] - 2026-06-18
+### Changed
+- **Karaoke Filter Improvement**: Upgraded the basic phase-inversion vocal remover into a professional multi-band crossover network. It splits the audio to isolate and preserve low-frequency bass and kick drums (below 150Hz) while applying phase cancellation exclusively to the mid/high frequencies (above 150Hz). It also outputs in-phase mono signals for safe compatibility on mono speakers.
+
+## [1.6.1] - 2026-06-18
+### Changed
+- **Player Interface Redesign**: Converted the vertical "Details" list block inside the `Now Playing` embeds into individual inline fields (`Tags`, `Subtitles`, `Uploaded`). This aligns them horizontally side-by-side (sideways) with other fields like `Channel` and `Duration`, creating a cleaner card interface.
+
+## [1.6.0] - 2026-06-18
+### Changed
+- **Metadata Tags**: Replaced "Genre" display and logic with YouTube "Tags". The player now shows up to 3 tags of the playing track (or None if not available) instead of a single category genre.
+- **Autoplay Refactoring**: Refactored the Autoplay query logic to use the first tag of the previously played track when generating subsequent search queries.
+- **Credit Command Code Refactoring**: Introduced a global `BOT_VERSION` variable at the module level in `cogs/music.py`, allowing the `!credit` command to dynamically fetch the version instead of hardcoding it.
+- **Command Parameter Update**: Updated references of "genre" to "tag" in the `!autoplay` command and the helper page listing.
+
+## [1.5.0] - 2026-06-18
+### Added
+- **YouTube Music Prioritization**: Default search queries now prioritize YouTube Music (`https://music.youtube.com/search?q=...`) rather than regular YouTube to return official music track formats first. Added a filtering system to discard non-playable search results (like artist channels and empty albums) and only queue playable tracks. This applies to both the `!play` command and Autoplay.
+
+### Fixed
+- **HTTP 403 Forbidden Error**: Resolved streaming playback and seeking failures by passing yt-dlp extracted HTTP headers (including User-Agent) directly to FFmpeg options.
 
 ## [1.4.0] - 2026-06-18
 ### Added
