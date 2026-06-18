@@ -5,6 +5,10 @@ import yt_dlp
 import asyncio
 import time
 import random
+import aiohttp
+import json
+import io
+import re
 from config import YTDL_SEARCH_OPTIONS, YTDL_STREAM_OPTIONS, FFMPEG_OPTIONS
 
 ytdl_search = yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS)
@@ -37,7 +41,7 @@ AUDIO_FILTERS = {
     "bassboost": "bass=g=20",
     "nightcore": "asetrate=48000*1.25,aresample=48000,atempo=1.0",
     "vaporwave": "asetrate=48000*0.8,aresample=48000,atempo=1.0",
-    "karaoke": "pan=stereo|c0=c0|c1=-c1",
+    "karaoke": "pan=stereo|c0=c0-c1|c1=c1-c0",
     "8d": "apulsator=hz=0.08",
     "clear": ""
 }
@@ -71,7 +75,8 @@ class MusicCog(commands.Cog):
                 'autoplay': False,
                 'autoplay_query': None,
                 'played_history': [],
-                'current_filter': "clear"
+                'current_filter': "clear",
+                'autoplay_failures': 0
             }
         return self.guild_states[guild_id]
 
@@ -140,6 +145,21 @@ class MusicCog(commands.Cog):
             await self.play_current_seek(guild_id, channel)
         else:
             current_track = state.get('current_track')
+            
+            elapsed = time.time() - state.get('start_time', 0)
+            if elapsed < 3 and not state.get('is_skipping') and not state.get('is_replaying') and not state.get('is_seeking'):
+                state['autoplay_failures'] = state.get('autoplay_failures', 0) + 1
+                if state.get('autoplay') and state['autoplay_failures'] >= 3:
+                    state['autoplay'] = False
+                    asyncio.run_coroutine_threadsafe(
+                        channel.send("⚠️ Autoplay automatically disabled due to 3 consecutive track failures."),
+                        self.bot.loop
+                    )
+                    state['autoplay_failures'] = 0
+                    return
+            elif elapsed >= 3:
+                state['autoplay_failures'] = 0
+
             if current_track:
                 old_prev = state.get('previous_track')
                 state['previous_track'] = current_track
@@ -254,6 +274,7 @@ class MusicCog(commands.Cog):
                 view_count = data.get('view_count')
                 categories = data.get('categories')
                 genre = categories[0] if categories else "Unknown"
+                thumbnail = data.get('thumbnail', item.get('thumbnail'))
 
                 upload_date = data.get('upload_date')
                 formatted_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}" if upload_date and len(upload_date) == 8 else None
@@ -272,47 +293,60 @@ class MusicCog(commands.Cog):
                     'genre': genre,
                     'upload_date': formatted_date,
                     'subtitles': subs_str,
-                    'is_live': is_live
+                    'is_live': is_live,
+                    'subtitles_data': data.get('subtitles', {}),
+                    'auto_captions_data': data.get('automatic_captions', {}),
+                    'thumbnail': thumbnail
                 }
                 
                 duration_str = self.format_time(duration) if duration and not is_live else "Live/Unknown"
                 
                 embed = discord.Embed(title="🎵  Now Playing", description=f"**[{title}]({url})**", color=discord.Color.from_rgb(255, 105, 180))
+                if thumbnail:
+                    embed.set_thumbnail(url=thumbnail)
                 embed.add_field(name="Channel", value=uploader, inline=True)
                 embed.add_field(name="Duration", value=duration_str, inline=True)
                 
                 if view_count:
                     embed.add_field(name="Views", value=f"{view_count:,}", inline=True)
                 
+                details = ""
                 if genre and genre != "Unknown":
-                    embed.add_field(name="Genre", value=genre, inline=True)
-                
+                    details += f"**Genre:** {genre}\n"
                 if subs_str:
-                    embed.add_field(name="Subtitles", value=subs_str, inline=True)
+                    details += f"**Subtitles:** {subs_str}\n"
+                if formatted_date:
+                    details += f"**Uploaded:** {formatted_date}\n"
+                if details:
+                    embed.add_field(name="Details", value=details, inline=True)
                 
                 footer_text = "Outa • Youtube Music Bot"
-                if formatted_date:
-                    footer_text += f" • Uploaded: {formatted_date}"
                 embed.set_footer(text=footer_text, icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
                 
                 if state['now_playing_message']:
                     try:
-                        await state['now_playing_message'].edit(embed=embed, view=None)
+                        await state['now_playing_message'].delete()
                     except discord.NotFound:
-                        state['now_playing_message'] = await channel.send(embed=embed)
-                else:
-                    state['now_playing_message'] = await channel.send(embed=embed)
+                        pass
+                state['now_playing_message'] = await channel.send(embed=embed)
                 
             except Exception as e:
+                state['autoplay_failures'] = state.get('autoplay_failures', 0) + 1
+                if state.get('autoplay') and state['autoplay_failures'] >= 3:
+                    state['autoplay'] = False
+                    await channel.send("⚠️ Autoplay automatically disabled due to 3 consecutive track failures.")
+                    state['autoplay_failures'] = 0
+                    return
                 await channel.send(f"Failed to play **{item['title']}**: Skipping...")
+                await asyncio.sleep(1)
                 await self.play_next(guild_id, channel)
         else:
             state['current_track'] = None
             state['stream_url'] = None
             if state['now_playing_message']:
                 try:
-                    embed = discord.Embed(title="Queue Finished", description="Waiting for more tracks...", color=discord.Color.orange())
-                    await state['now_playing_message'].edit(embed=embed, view=None)
+                    await state['now_playing_message'].delete()
+                    state['now_playing_message'] = None
                 except discord.NotFound:
                     pass
             if guild_id not in self.disconnect_tasks:
@@ -614,28 +648,33 @@ class MusicCog(commands.Cog):
         formatted_date = track.get('upload_date')
         subs_str = track.get('subtitles')
         is_live = track.get('is_live', False)
+        thumbnail = track.get('thumbnail')
         
         duration_str = self.format_time(duration) if duration and not is_live else "Live/Unknown"
         elapsed_secs = self.get_elapsed(state)
         elapsed_str = self.format_time(elapsed_secs)
         
         embed = discord.Embed(title="🎵  Now Playing", description=f"**[{title}]({url})**", color=discord.Color.from_rgb(255, 105, 180))
-        
+        if thumbnail:
+            embed.set_thumbnail(url=thumbnail)
+            
         embed.add_field(name="Channel", value=uploader, inline=True)
         embed.add_field(name="Progress", value=f"{elapsed_str} / {duration_str}", inline=True)
         
         if view_count:
             embed.add_field(name="Views", value=f"{view_count:,}", inline=True)
             
+        details = ""
         if genre and genre != "Unknown":
-            embed.add_field(name="Genre", value=genre, inline=True)
-        
+            details += f"**Genre:** {genre}\n"
         if subs_str:
-            embed.add_field(name="Subtitles", value=subs_str, inline=True)
+            details += f"**Subtitles:** {subs_str}\n"
+        if formatted_date:
+            details += f"**Uploaded:** {formatted_date}\n"
+        if details:
+            embed.add_field(name="Details", value=details, inline=True)
             
         footer_text = "Outa • Youtube Music Bot"
-        if formatted_date:
-            footer_text += f" • Uploaded: {formatted_date}"
         embed.set_footer(text=footer_text, icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
         
         await ctx.send(embed=embed)
@@ -779,6 +818,7 @@ class MusicCog(commands.Cog):
             state['is_replaying'] = True
             vc.stop()
             await ctx.send(f"Replaying **{state['previous_track']['title']}**...")
+
         else:
             state['queue'].insert(0, state['previous_track'])
             await ctx.send(f"Replaying **{state['previous_track']['title']}**...")
@@ -804,6 +844,76 @@ class MusicCog(commands.Cog):
         )
         embed.set_footer(text="Outa • Youtube Music Bot", icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
         await ctx.send(embed=embed)
+
+    @commands.command(name="subs", aliases=["subtitle", "lyrics"], help="Fetches subtitles for the currently playing track. Usage: !subs [language_code]")
+    async def subs(self, ctx: commands.Context, lang_code: str = None):
+        state = self.get_state(ctx.guild.id)
+        if not state['current_track']:
+            return await ctx.send("Nothing is currently playing.")
+            
+        track = state['current_track']
+        subs_data = track.get('subtitles_data', {})
+        auto_data = track.get('auto_captions_data', {})
+        
+        if not subs_data and not auto_data:
+            return await ctx.send("No subtitles or closed captions available for this track.")
+            
+        if not lang_code:
+            available = list(subs_data.keys()) + [f"{k} (auto)" for k in auto_data.keys()]
+            return await ctx.send(f"Please provide a language code (e.g., `!subs en`).\nAvailable languages: {', '.join(available[:20])}")
+            
+        lang_code = lang_code.lower()
+        sub_list = subs_data.get(lang_code) or auto_data.get(lang_code)
+        
+        if not sub_list:
+            return await ctx.send(f"Subtitle for language `{lang_code}` not found.")
+            
+        # Prioritize json3 for easier text extraction, fallback to vtt
+        target_sub = next((s for s in sub_list if s.get('ext') == 'json3'), None)
+        if not target_sub:
+            target_sub = next((s for s in sub_list if s.get('ext') == 'vtt'), None)
+            
+        if not target_sub:
+            return await ctx.send(f"Could not find a parsable subtitle format (json3/vtt) for `{lang_code}`.")
+            
+        url = target_sub.get('url')
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        return await ctx.send("Failed to download subtitles.")
+                    text_data = await resp.text()
+                    
+            parsed_text = ""
+            if target_sub['ext'] == 'json3':
+                try:
+                    json_data = json.loads(text_data)
+                    for event in json_data.get("events", []):
+                        if "segs" in event:
+                            line = "".join(seg.get("utf8", "") for seg in event["segs"])
+                            if line.strip():
+                                parsed_text += line.strip() + "\n"
+                except Exception:
+                    return await ctx.send("Error parsing JSON subtitle.")
+            else: # vtt
+                lines = text_data.split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if not line or line == "WEBVTT" or "-->" in line or line.startswith("Kind:") or line.startswith("Language:"):
+                        continue
+                    # Remove html tags
+                    line = re.sub(r'<[^>]+>', '', line)
+                    if line:
+                        parsed_text += line + "\n"
+                        
+            if not parsed_text.strip():
+                return await ctx.send("Subtitle file is empty.")
+                
+            file = discord.File(io.BytesIO(parsed_text.encode('utf-8')), filename=f"{track['title']}_{lang_code}_subs.txt")
+            await ctx.send(content=f"Here are the `{lang_code}` subtitles/lyrics for **{track['title']}**:", file=file)
+            
+        except Exception as e:
+            await ctx.send(f"An error occurred while fetching subtitles: {str(e)}")
 
     @commands.command(name="autoplay", aliases=["ap"], help="Toggles autoplay and sets an optional genre")
     async def autoplay(self, ctx: commands.Context, *, genre: str = None):

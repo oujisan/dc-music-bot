@@ -3,6 +3,21 @@
 All notable changes to the **Outa Music Bot** project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-06-18
+### Added
+- **Subtitles/Lyrics Support**: Added a `!subs` (or `!subtitle`, `!lyrics`) command that fetches and downloads `.json3` or `.vtt` subtitles/captions directly from YouTube. Subtitles are parsed and sent to the channel as a `.txt` file attachment.
+- **Dependencies**: Added `aiohttp` to `requirements.txt` to handle asynchronous subtitle downloading.
+
+### Fixed
+- **Autoplay Infinite Loop Bug**: Built a robust fail-safe mechanism into the Autoplay system. If tracks fail to extract or immediately crash during playback (duration < 3s) for 3 consecutive times, the bot automatically disables autoplay to prevent infinite searching and API spamming loops.
+- **Karaoke Filter Syntax**: Fixed an FFmpeg syntax error (`Expected in channel name`) in the `karaoke` audio filter by implementing standard phase-inversion channel mapping (`pan=stereo|c0=c0-c1|c1=c1-c0`).
+
+### Changed
+- **Dynamic Player Re-rendering**: The bot now intelligently deletes its old player message and sends a fresh one at the bottom of the chat whenever a new song starts playing, ensuring the player is always visible without scrolling. The player is also cleanly deleted when playback is stopped or the queue finishes.
+- **Player Interface Improvements**: 
+  - Integrated rich YouTube video thumbnails into the `Now Playing` embeds. 
+  - Reorganized the layout to beautifully group `Genre`, `Subtitles`, and `Uploaded` details together rather than splitting them across the footer.
+
 ## [1.3.1] - 2026-06-18
 ### Changed
 - **Help Command**: Added spacing between the help header and category titles, and updated the `!filter` command to explicitly list all available filter options.

@@ -3,3 +3,4 @@ pynacl
 yt-dlp
 python-dotenv
 davey
+aiohttp
