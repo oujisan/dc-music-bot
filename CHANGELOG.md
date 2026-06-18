@@ -3,6 +3,20 @@
 All notable changes to the **Outa Music Bot** project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-06-18
+### Added
+- **Autoplay System**: 
+  - `!autoplay [genre]`: Toggles smart autoplay. If the queue is empty, the bot automatically fetches and plays related music. It can optionally be locked to a specific genre.
+  - Implemented an internal history tracker to guarantee the bot does not loop the same tracks.
+- **Audio Filters**: 
+  - `!filter <name>`: Injected FFmpeg parameters to dynamically apply real-time sound filters (`bassboost`, `nightcore`, `vaporwave`, `karaoke`, `8d`).
+  - Added a `clear` filter to revert to normal playback.
+
+## [1.2.1] - 2026-06-18
+### Changed
+- **Help Command Redesign**: Reorganized the `!help` command output. Commands are now grouped by category (Playback Controls, Queue Management, Session & Utilities) and listed one command per line for much better readability.
+- **Credit Versioning**: Added the current bot version display to the `!credit` command.
+
 ## [1.2.0] - 2026-06-18
 ### Documentation
 - **Comprehensive README Update**: Overhauled the `README.md` file to properly document the new feature set, updated the feature highlights, and clarified setup instructions for both local and Docker environments. Added a link pointing to this `CHANGELOG.md`.

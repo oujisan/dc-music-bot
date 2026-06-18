@@ -33,6 +33,15 @@ class PaginatorView(discord.ui.View):
         self.update_buttons()
         await interaction.response.edit_message(embed=self.embeds[self.current_page], view=self)
 
+AUDIO_FILTERS = {
+    "bassboost": "bass=g=20",
+    "nightcore": "asetrate=48000*1.25,aresample=48000,atempo=1.0",
+    "vaporwave": "asetrate=48000*0.8,aresample=48000,atempo=1.0",
+    "karaoke": "pan=stereo|c0=c0|c1=-c1",
+    "8d": "apulsator=hz=0.08",
+    "clear": ""
+}
+
 class MusicCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -58,7 +67,11 @@ class MusicCog(commands.Cog):
                 'volume': 1.0,
                 'now_playing_message': None,
                 'bound_channel': None,
-                'session_owner': None
+                'session_owner': None,
+                'autoplay': False,
+                'autoplay_query': None,
+                'played_history': [],
+                'current_filter': "clear"
             }
         return self.guild_states[guild_id]
 
@@ -152,10 +165,45 @@ class MusicCog(commands.Cog):
         queue = state['queue']
         vc = self.bot.get_guild(guild_id).voice_client
         
+        if len(queue) == 0 and state.get('autoplay') and not state.get('is_skipping') and not state.get('is_replaying'):
+            try:
+                search_query = "top music mix"
+                if state.get('autoplay_query'):
+                    search_query = f"{state['autoplay_query']} music"
+                elif state.get('previous_track'):
+                    prev = state['previous_track']
+                    if prev.get('genre') and prev['genre'] != 'Unknown':
+                        search_query = f"{prev['genre']} music"
+                    elif prev.get('uploader') and prev['uploader'] != 'Unknown Artist':
+                        search_query = f"{prev['uploader']} mix"
+                    else:
+                        search_query = f"{prev['title']} mix"
+
+                data = await self.bot.loop.run_in_executor(
+                    None, lambda: ytdl_search.extract_info(f"ytsearch10:{search_query}", download=False)
+                )
+                if 'entries' in data and data['entries']:
+                    entries = [e for e in data['entries'] if e]
+                    history = state.get('played_history', [])
+                    unplayed = [e for e in entries if e.get('url', e.get('webpage_url')) not in history]
+                    track = random.choice(unplayed) if unplayed else random.choice(entries)
+                    
+                    webpage_url = track.get('url') or track.get('webpage_url')
+                    queue.append({'webpage_url': webpage_url, 'title': track.get('title')})
+            except Exception:
+                pass
+        
         if len(queue) > 0:
             self.cancel_timeout(guild_id)
             item = queue.pop(0)
             state['current_track'] = item
+            
+            history = state['played_history']
+            url = item.get('webpage_url')
+            if url and url not in history:
+                history.append(url)
+            if len(history) > 50:
+                history.pop(0)
             
             try:
                 if 'prefetched_data' in item and item['prefetched_data'] != "loading":
@@ -166,7 +214,12 @@ class MusicCog(commands.Cog):
                     )
                 state['stream_url'] = data['url']
                 
-                source = discord.FFmpegPCMAudio(state['stream_url'], **FFMPEG_OPTIONS)
+                options = dict(FFMPEG_OPTIONS)
+                if state.get('current_filter') and state['current_filter'] != "clear":
+                    vf = AUDIO_FILTERS[state['current_filter']]
+                    options['options'] = f"{options.get('options', '')} -filter:a \"{vf}\""
+                
+                source = discord.FFmpegPCMAudio(state['stream_url'], **options)
                 source = discord.PCMVolumeTransformer(source, volume=state['volume'])
                 
                 def after_playing(e):
@@ -271,7 +324,13 @@ class MusicCog(commands.Cog):
         vc = self.bot.get_guild(guild_id).voice_client
         
         custom_before = f"{FFMPEG_OPTIONS['before_options']} -ss {target_seconds}"
-        source = discord.FFmpegPCMAudio(state['stream_url'], before_options=custom_before, options=FFMPEG_OPTIONS['options'])
+        
+        options_str = FFMPEG_OPTIONS['options']
+        if state.get('current_filter') and state['current_filter'] != "clear":
+            vf = AUDIO_FILTERS[state['current_filter']]
+            options_str = f"{options_str} -filter:a \"{vf}\""
+            
+        source = discord.FFmpegPCMAudio(state['stream_url'], before_options=custom_before, options=options_str)
         source = discord.PCMVolumeTransformer(source, volume=state['volume'])
         
         def after_playing(e):
@@ -746,11 +805,56 @@ class MusicCog(commands.Cog):
         embed.set_footer(text="Outa • Youtube Music Bot", icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
         await ctx.send(embed=embed)
 
+    @commands.command(name="autoplay", aliases=["ap"], help="Toggles autoplay and sets an optional genre")
+    async def autoplay(self, ctx: commands.Context, *, genre: str = None):
+        state = self.get_state(ctx.guild.id)
+        if not self.is_dj(ctx.author, state):
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
+        
+        if genre:
+            state['autoplay'] = True
+            state['autoplay_query'] = genre
+            await ctx.send(f"🤖 **Autoplay is now ON**. Genre targeted to: `{genre}`")
+        else:
+            state['autoplay'] = not state.get('autoplay', False)
+            state['autoplay_query'] = None
+            if state['autoplay']:
+                await ctx.send("🤖 **Autoplay is now ON**. The bot will play recommended songs automatically.")
+            else:
+                await ctx.send("🤖 **Autoplay is now OFF**.")
+                
+        vc = ctx.guild.voice_client
+        if state['autoplay'] and len(state['queue']) == 0 and vc and not vc.is_playing() and not vc.is_paused():
+            await self.play_next(ctx.guild.id, ctx.channel)
+
+    @commands.command(name="filter", help="Applies an audio filter (e.g. bassboost, nightcore, clear)")
+    async def apply_filter(self, ctx: commands.Context, filter_name: str = "clear"):
+        state = self.get_state(ctx.guild.id)
+        if not self.is_dj(ctx.author, state):
+            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
+            
+        filter_name = filter_name.lower()
+        if filter_name not in AUDIO_FILTERS:
+            valid_filters = ", ".join([f"`{f}`" for f in AUDIO_FILTERS.keys()])
+            return await ctx.send(f"❌ Invalid filter. Available filters: {valid_filters}")
+            
+        state['current_filter'] = filter_name
+        
+        if filter_name == "clear":
+            await ctx.send("🧹 **Filters cleared**.")
+        else:
+            await ctx.send(f"🎛️ **Filter applied:** `{filter_name}`")
+            
+        vc = ctx.guild.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            current_elapsed = self.get_elapsed(state)
+            await self.execute_seek_signal(ctx.guild.id, ctx.channel, current_elapsed)
+
     @commands.command(name="credit", help="Displays the creator of the bot")
     async def credit(self, ctx: commands.Context):
         embed = discord.Embed(
             title="✨ Credits",
-            description="Created with ❤️ by **Vou Aka. Oujisan**\nPowered by the intelligence of **Gemini AI**\n\n🐙 **[GitHub Repository](https://github.com/oujisan/dc-music-bot)**",
+            description="Created with ❤️ by **Vou Aka. Oujisan**\nPowered by the intelligence of **Gemini AI**\n\n🐙 **[GitHub Repository](https://github.com/oujisan/dc-music-bot)**\n\n🏷️ **Version:** 1.3.0",
             color=discord.Color.gold()
         )
         embed.set_footer(text="Outa • Youtube Music Bot", icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
@@ -758,45 +862,54 @@ class MusicCog(commands.Cog):
 
     @commands.command(name="help", help="Displays a list of available commands")
     async def help_command(self, ctx: commands.Context):
-        commands_list = [
-            ("▶️ `!play <query/url>`", "Plays a track or playlist."),
-            ("🎵 `!player` (or `!np`)", "Displays the currently playing track."),
-            ("⏸️ `!pause` & ▶️ `!resume`", "Pauses and resumes playback."),
-            ("⏹️ `!stop`", "Stops playback and clears the queue."),
-            ("⏭️ `!skip [index]`", "Skips current track or skips to index."),
-            ("⏩ `!forward <seconds>` & ⏪ `!back <seconds>`", "Skips audio forward/backward."),
-            ("🔁 `!loop` & `!loopqueue`", "Toggles loop for current track / entire queue."),
-            ("⏪ `!replay`", "Replays the previously played track."),
-            ("⏱️ `!seek <time>`", "Jumps to a specific time (Example: `!seek 01:30`)."),
-            ("📜 `!queue`", "Displays the music queue."),
-            ("🗑️ `!drop <indices>`", "Removes tracks (e.g., `1,3,5-7`) / `!clear` empties it."),
-            ("🔀 `!shuffle` &  🔄 `!move <from> <to>`", "Shuffles or moves a track's position."),
-            ("🔊 `!volume <1-100>`", "Adjusts the playback volume."),
-            ("👑 `!dj` & `!transfer <@user>`", "Shows the current DJ or transfers the role."),
-            ("🏓 `!ping`", "Checks the bot's latency to the server."),
-            ("✨ `!credit`", "Displays the creator of the bot."),
-            ("🚪 `!quit`", "Disconnects the bot from the voice channel.")
-        ]
+        commands_dict = {
+            "🎶 Playback Controls": [
+                ("▶️ `!play <query/url>`", "Plays a track or playlist."),
+                ("⏸️ `!pause`", "Pauses playback."),
+                ("▶️ `!resume`", "Resumes playback."),
+                ("⏹️ `!stop`", "Stops playback and clears the queue."),
+                ("⏭️ `!skip [index]`", "Skips current track or skips to index."),
+                ("⏪ `!replay`", "Replays the previously played track."),
+                ("⏩ `!forward <seconds>`", "Skips audio forward by seconds."),
+                ("⏪ `!back <seconds>`", "Skips audio backward by seconds."),
+                ("⏱️ `!seek <time>`", "Jumps to a specific time (e.g. `01:30`)."),
+                ("🔊 `!volume <1-100>`", "Adjusts the playback volume.")
+            ],
+            "📜 Queue Management": [
+                ("📜 `!queue`", "Displays the music queue."),
+                ("🎵 `!player` (or `!np`)", "Displays the currently playing track."),
+                ("🤖 `!autoplay [genre]`", "Toggles autoplay (optional: specific genre)."),
+                ("🎛️ `!filter <name>`", "Applies an audio filter (e.g. bassboost, clear)."),
+                ("🔁 `!loop`", "Toggles loop for current track."),
+                ("🔁 `!loopqueue` (or `!lq`)", "Toggles loop for the entire queue."),
+                ("🗑️ `!drop <indices>`", "Removes specific tracks (e.g., `1,3,5-7`)."),
+                ("🗑️ `!clear`", "Empties the queue."),
+                ("🔀 `!shuffle`", "Shuffles the queue."),
+                ("🔄 `!move <from> <to>`", "Moves a track's position in the queue.")
+            ],
+            "⚙️ Session & Utilities": [
+                ("👑 `!dj`", "Shows the current DJ."),
+                ("👑 `!transfer <@user>`", "Transfers the DJ role to another user."),
+                ("🚪 `!quit`", "Disconnects the bot from the voice channel."),
+                ("🏓 `!ping`", "Checks the bot's latency to the server."),
+                ("✨ `!credit`", "Displays the creator of the bot & version.")
+            ]
+        }
         
         embeds = []
-        items_per_page = 6
-        total_pages = max(1, (len(commands_list) + items_per_page - 1) // items_per_page)
+        total_pages = len(commands_dict)
         
-        for page in range(total_pages):
+        for i, (category, commands) in enumerate(commands_dict.items()):
             embed = discord.Embed(
                 title="🎧 Outa Music Bot",
-                description="List of available commands:",
+                description=f"**{category}**",
                 color=discord.Color.blurple()
             )
             
-            start_idx = page * items_per_page
-            end_idx = start_idx + items_per_page
-            page_items = commands_list[start_idx:end_idx]
-            
-            for name, value in page_items:
+            for name, value in commands:
                 embed.add_field(name=name, value=value, inline=False)
                 
-            embed.set_footer(text=f"Page {page+1}/{total_pages} | The bot will automatically disconnect if you leave it alone in the channel.")
+            embed.set_footer(text=f"Page {i+1}/{total_pages} | The bot will automatically disconnect if you leave it alone in the channel.")
             embeds.append(embed)
             
         if len(embeds) == 1:
