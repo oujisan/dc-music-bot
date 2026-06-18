@@ -233,8 +233,17 @@ class MusicCog(commands.Cog):
                         None, lambda: ytdl_stream.extract_info(item['webpage_url'], download=False)
                     )
                 state['stream_url'] = data['url']
+                state['http_headers'] = data.get('http_headers', {})
                 
                 options = dict(FFMPEG_OPTIONS)
+                
+                headers = state.get('http_headers', {})
+                if headers:
+                    headers_list = [f"{k}: {v}" for k, v in headers.items()]
+                    headers_str = "\r\n".join(headers_list) + "\r\n"
+                    headers_str_escaped = headers_str.replace('"', '\\"')
+                    options['before_options'] = f"{options.get('before_options', '')} -headers \"{headers_str_escaped}\""
+                
                 if state.get('current_filter') and state['current_filter'] != "clear":
                     vf = AUDIO_FILTERS[state['current_filter']]
                     options['options'] = f"{options.get('options', '')} -filter:a \"{vf}\""
@@ -358,6 +367,13 @@ class MusicCog(commands.Cog):
         vc = self.bot.get_guild(guild_id).voice_client
         
         custom_before = f"{FFMPEG_OPTIONS['before_options']} -ss {target_seconds}"
+        
+        headers = state.get('http_headers', {})
+        if headers:
+            headers_list = [f"{k}: {v}" for k, v in headers.items()]
+            headers_str = "\r\n".join(headers_list) + "\r\n"
+            headers_str_escaped = headers_str.replace('"', '\\"')
+            custom_before = f"{custom_before} -headers \"{headers_str_escaped}\""
         
         options_str = FFMPEG_OPTIONS['options']
         if state.get('current_filter') and state['current_filter'] != "clear":
@@ -964,7 +980,7 @@ class MusicCog(commands.Cog):
     async def credit(self, ctx: commands.Context):
         embed = discord.Embed(
             title="✨ Credits",
-            description="Created with ❤️ by **Vou Aka. Oujisan**\nPowered by the intelligence of **Gemini AI**\n\n🐙 **[GitHub Repository](https://github.com/oujisan/dc-music-bot)**\n\n🏷️ **Version:** 1.3.0",
+            description="Created with ❤️ by **Vou Aka. Oujisan**\nPowered by the intelligence of **Gemini AI**\n\n🐙 **[GitHub Repository](https://github.com/oujisan/dc-music-bot)**\n\n🏷️ **Version:** 1.4.0",
             color=discord.Color.gold()
         )
         embed.set_footer(text="Outa • Youtube Music Bot", icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
@@ -1000,6 +1016,7 @@ class MusicCog(commands.Cog):
             "⚙️ Session & Utilities": [
                 ("👑 `!dj`", "Shows the current DJ."),
                 ("👑 `!transfer <@user>`", "Transfers the DJ role to another user."),
+                ("💬 `!subs [lang_code]`", "Fetches subtitles/lyrics for the currently playing track."),
                 ("🚪 `!quit`", "Disconnects the bot from the voice channel."),
                 ("🏓 `!ping`", "Checks the bot's latency to the server."),
                 ("✨ `!credit`", "Displays the creator of the bot & version.")
