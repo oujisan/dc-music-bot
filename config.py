@@ -15,7 +15,8 @@ YTDL_SEARCH_OPTIONS = {
     'quiet': True,
     'no_warnings': True,
     'default_search': 'auto',
-    'source_address': '0.0.0.0'
+    'source_address': '0.0.0.0',
+    'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
 }
 
 YTDL_STREAM_OPTIONS = {
@@ -24,7 +25,8 @@ YTDL_STREAM_OPTIONS = {
     'ignoreerrors': False,
     'quiet': True,
     'no_warnings': True,
-    'source_address': '0.0.0.0'
+    'source_address': '0.0.0.0',
+    'extractor_args': {'youtube': {'player_client': ['android', 'web']}}
 }
 
 FFMPEG_OPTIONS = {

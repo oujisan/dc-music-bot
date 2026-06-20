@@ -119,17 +119,21 @@ class SearchView(discord.ui.View):
         self.select.callback = self.select_callback
         self.add_item(self.select)
         
-        self.play_button = discord.ui.Button(label="Play Now", style=discord.ButtonStyle.primary, custom_id="search_play", disabled=True)
-        self.play_button.callback = self.play_callback
-        self.add_item(self.play_button)
+        state = self.cog.get_state(self.ctx.guild.id)
+        vc = self.ctx.guild.voice_client
+        is_active = (vc and (vc.is_playing() or vc.is_paused())) or len(state['queue']) > 0
         
-        self.queue_button = discord.ui.Button(label="Add to Queue", style=discord.ButtonStyle.success, custom_id="search_queue", disabled=True)
-        self.queue_button.callback = self.queue_callback
-        self.add_item(self.queue_button)
+        if is_active:
+            self.action_button = discord.ui.Button(label="Add to Queue", style=discord.ButtonStyle.success, custom_id="search_action", disabled=True)
+            self.action_button.callback = self.queue_callback
+        else:
+            self.action_button = discord.ui.Button(label="Play Now", style=discord.ButtonStyle.primary, custom_id="search_action", disabled=True)
+            self.action_button.callback = self.play_callback
+            
+        self.add_item(self.action_button)
         
     async def select_callback(self, interaction: discord.Interaction):
-        self.play_button.disabled = False
-        self.queue_button.disabled = False
+        self.action_button.disabled = False
         await interaction.response.edit_message(view=self)
 
     async def play_callback(self, interaction: discord.Interaction):
@@ -729,6 +733,8 @@ class MusicCog(commands.Cog):
             else:
                 await ctx.send("No results found.")
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             await ctx.send(f"Failed to search: {str(e)}")
 
     @commands.command(name="pause", help="Pauses current playback")
@@ -1129,16 +1135,32 @@ class MusicCog(commands.Cog):
             return await ctx.send("Nothing is currently playing.")
             
         track = state['current_track']
-        title = track.get('title')
+        raw_title = track.get('title', '')
         
-        if not title:
+        if not raw_title:
             return await ctx.send("Could not determine the track title.")
             
-        await ctx.send("🔍 Fetching lyrics, please wait...", delete_after=3)
+        import re
+        # Remove anything in brackets like (Official Video), [MV]
+        clean_title = re.sub(r'[\(\[【].*?[\)\]】]', '', raw_title)
+        
+        # Split by common separators and take the last part (usually Artist - Title)
+        if ' - ' in clean_title:
+            clean_title = clean_title.split(' - ')[-1]
+        elif ' | ' in clean_title:
+            clean_title = clean_title.split(' | ')[0]
+        elif ' · ' in clean_title:
+            clean_title = clean_title.split(' · ')[0]
+            
+        search_title = clean_title.strip()
+        if not search_title:
+            search_title = raw_title
+            
+        await ctx.send(f"🔍 Fetching lyrics for `{search_title}`, please wait...", delete_after=3)
         
         import urllib.parse
         base_url = "http://lyrics-api:8888/api/v2/lyrics"
-        params = {"title": title, "platform": "musixmatch"}
+        params = {"title": search_title, "platform": "musixmatch"}
         
         if translate_lang:
             params["translate"] = translate_lang.lower()
@@ -1156,7 +1178,7 @@ class MusicCog(commands.Cog):
                         return await ctx.send(f"❌ Could not fetch lyrics: {err_msg}")
                         
                     lyrics_text = data["data"]["lyrics"]
-                    track_name = data["data"].get("trackName", title)
+                    track_name = data["data"].get("trackName", raw_title)
                     artist_name = data["data"].get("artistName", "Unknown Artist")
                     
                     header = f"**{track_name}** by **{artist_name}**"
