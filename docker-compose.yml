@@ -11,3 +11,14 @@ services:
     #   resources:
     #     limits:
     #       memory: 1024M
+
+  lyrics-api:
+    image: eclipse-temurin:17-jre
+    container_name: lyrics-api
+    restart: unless-stopped
+    volumes:
+      - ./api:/app
+    working_dir: /app
+    command: java -jar LyricsApi.jar
+    ports:
+      - "8888:8888"

@@ -11,7 +11,7 @@ import io
 import re
 from config import YTDL_SEARCH_OPTIONS, YTDL_STREAM_OPTIONS, FFMPEG_OPTIONS
 
-BOT_VERSION = "1.7.1"
+BOT_VERSION = "1.8.1"
 
 ytdl_search = yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS)
 ytdl_stream = yt_dlp.YoutubeDL(YTDL_STREAM_OPTIONS)
@@ -75,11 +75,120 @@ class PaginatorView(discord.ui.View):
         self.update_buttons()
         await interaction.response.edit_message(embed=self.embeds[self.current_page], view=self)
 
+class ClearConfirmView(discord.ui.View):
+    def __init__(self, cog, guild_id, author_id):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.author_id = author_id
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger, custom_id="clear_confirm")
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self.cog.get_state(self.guild_id)
+        if interaction.user.id != self.author_id and not self.cog.is_dj(interaction.user, state):
+            return await interaction.response.send_message("Only the DJ can confirm this.", ephemeral=True)
+            
+        state['queue'].clear()
+        state['loopqueue'] = False
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="Queue has been cleared and queue loop disabled.", view=self)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, custom_id="clear_cancel")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self.cog.get_state(self.guild_id)
+        if interaction.user.id != self.author_id and not self.cog.is_dj(interaction.user, state):
+            return await interaction.response.send_message("Only the DJ can cancel this.", ephemeral=True)
+            
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="Clear queue cancelled.", view=self)
+
+class SearchView(discord.ui.View):
+    def __init__(self, cog, ctx, tracks):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.ctx = ctx
+        self.tracks = tracks
+        
+        options = []
+        for i, track in enumerate(self.tracks):
+            options.append(discord.SelectOption(label=f"{i+1}. {track['title'][:90]}", value=str(i)))
+            
+        self.select = discord.ui.Select(placeholder="Select a track...", options=options, custom_id="search_select")
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+        
+        self.play_button = discord.ui.Button(label="Play Now", style=discord.ButtonStyle.primary, custom_id="search_play", disabled=True)
+        self.play_button.callback = self.play_callback
+        self.add_item(self.play_button)
+        
+        self.queue_button = discord.ui.Button(label="Add to Queue", style=discord.ButtonStyle.success, custom_id="search_queue", disabled=True)
+        self.queue_button.callback = self.queue_callback
+        self.add_item(self.queue_button)
+        
+    async def select_callback(self, interaction: discord.Interaction):
+        self.play_button.disabled = False
+        self.queue_button.disabled = False
+        await interaction.response.edit_message(view=self)
+
+    async def play_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id and not self.cog.is_dj(interaction.user, self.cog.get_state(self.ctx.guild.id)):
+            return await interaction.response.send_message("Only the DJ or the requester can do this.", ephemeral=True)
+            
+        selected_index = int(self.select.values[0])
+        track = self.tracks[selected_index]
+        
+        state = self.cog.get_state(self.ctx.guild.id)
+        state['queue'].insert(0, track)
+        
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content=f"🎵 Playing **{track['title']}** now...", view=self)
+        
+        vc = self.ctx.guild.voice_client
+        if vc and vc.is_playing():
+            state['is_skipping'] = True
+            vc.stop()
+        elif not vc or not vc.is_connected():
+            if self.ctx.author.voice:
+                await self.ctx.author.voice.channel.connect()
+                state['session_owner'] = self.ctx.author.id
+                await self.cog.play_next(self.ctx.guild.id, self.ctx.channel)
+            else:
+                await self.ctx.send("You must be in a Voice Channel.")
+        else:
+            await self.cog.play_next(self.ctx.guild.id, self.ctx.channel)
+
+    async def queue_callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id and not self.cog.is_dj(interaction.user, self.cog.get_state(self.ctx.guild.id)):
+            return await interaction.response.send_message("Only the DJ or the requester can do this.", ephemeral=True)
+            
+        selected_index = int(self.select.values[0])
+        track = self.tracks[selected_index]
+        
+        state = self.cog.get_state(self.ctx.guild.id)
+        state['queue'].append(track)
+        
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content=f"✅ Added **{track['title']}** to queue.", view=self)
+        
+        vc = self.ctx.guild.voice_client
+        if not vc or not vc.is_connected():
+            if self.ctx.author.voice:
+                await self.ctx.author.voice.channel.connect()
+                state['session_owner'] = self.ctx.author.id
+                await self.cog.play_next(self.ctx.guild.id, self.ctx.channel)
+        elif not vc.is_playing() and not vc.is_paused():
+            await self.cog.play_next(self.ctx.guild.id, self.ctx.channel)
+
 AUDIO_FILTERS = {
     "bassboost": "bass=g=20",
     "nightcore": "asetrate=48000*1.25,aresample=48000,atempo=1.0",
     "vaporwave": "asetrate=48000*0.8,aresample=48000,atempo=1.0",
     "karaoke": "asplit=2[mid_source][side_source];[mid_source]pan=stereo|c0=0.5*c0+0.5*c1|c1=0.5*c0+0.5*c1,equalizer=f=1000:width_type=h:width=3000:g=-25[mid_attenuated];[side_source]pan=stereo|c0=0.5*c0-0.5*c1|c1=-0.5*c0+0.5*c1[side];[mid_attenuated][side]amix=inputs=2:normalize=0",
+    "voice": "pan=mono|c0=0.5*c0+0.5*c1,highpass=f=200,lowpass=f=3000",
     "8d": "apulsator=hz=0.08",
     "clear": ""
 }
@@ -579,6 +688,49 @@ class MusicCog(commands.Cog):
         elif added_count > 0:
             asyncio.create_task(self.prefetch_next(ctx.guild.id))
 
+    @commands.command(name="show", aliases=["s"], help="Searches and shows results before playing")
+    async def show(self, ctx: commands.Context, *, search: str):
+        if not ctx.author.voice:
+            return await ctx.send("Connection rejected: You must be in a Voice Channel.")
+        
+        await ctx.send(f"🔍 Searching for `{search}`...", delete_after=3)
+        try:
+            import urllib.parse
+            query = f"https://music.youtube.com/search?q={urllib.parse.quote(search)}"
+            data = await self.bot.loop.run_in_executor(
+                None, lambda: ytdl_search.extract_info(query, download=False)
+            )
+            
+            if 'entries' in data:
+                entries = [entry for entry in list(data['entries']) if entry]
+                entries = [
+                    entry for entry in entries 
+                    if (entry.get('title') is not None) and ('watch?v=' in (entry.get('url') or entry.get('webpage_url') or ''))
+                ]
+                
+                if not entries:
+                    return await ctx.send("No playable results found.")
+                
+                tracks = []
+                for entry in entries[:5]:
+                    webpage_url = entry.get('url') or entry.get('webpage_url')
+                    title = clean_title(entry.get('title'))
+                    tracks.append({'webpage_url': webpage_url, 'title': title})
+                    
+                if not tracks:
+                    return await ctx.send("No playable results found.")
+                    
+                embed = discord.Embed(title="🔍 Search Results", description="Select a track below to play or add to queue:", color=discord.Color.blurple())
+                for i, track in enumerate(tracks):
+                    embed.add_field(name=f"{i+1}. {track['title']}", value=f"[Link]({track['webpage_url']})", inline=False)
+                    
+                view = SearchView(self, ctx, tracks)
+                await ctx.send(embed=embed, view=view)
+            else:
+                await ctx.send("No results found.")
+        except Exception as e:
+            await ctx.send(f"Failed to search: {str(e)}")
+
     @commands.command(name="pause", help="Pauses current playback")
     async def pause(self, ctx: commands.Context):
         state = self.get_state(ctx.guild.id)
@@ -607,7 +759,7 @@ class MusicCog(commands.Cog):
         else:
             await ctx.send("Not paused.")
 
-    @commands.command(name="skip", help="Skips the current track")
+    @commands.command(name="skip", aliases=["sk"], help="Skips the current track")
     async def skip(self, ctx: commands.Context, index: int = None):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
@@ -662,13 +814,19 @@ class MusicCog(commands.Cog):
         except ValueError:
             await ctx.send("Wrong time format. Use second number (e.g. `90`) or format `MM:SS` (e.g. `02:30`).")
 
-    @commands.command(name="drop", help="Removes a track or multiple tracks from the queue (e.g., 1,3,5-7)")
+    @commands.command(name="drop", help="Removes a track or multiple tracks from the queue (e.g., 1,3,5-7, last, 0)")
     async def drop(self, ctx: commands.Context, *, drop_input: str):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
             return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
         queue = state['queue']
         
+        if drop_input.lower() in ['last', '0']:
+            if not queue:
+                return await ctx.send("The queue is empty.")
+            item = queue.pop(-1)
+            return await ctx.send(f"Dropped **{item['title']}** from the queue.")
+            
         indices_to_drop = set()
         parts = drop_input.split(',')
         for part in parts:
@@ -708,7 +866,7 @@ class MusicCog(commands.Cog):
             if ctx.guild.id not in self.disconnect_tasks:
                 self.disconnect_tasks[ctx.guild.id] = self.bot.loop.create_task(self.inactivity_timeout(ctx.guild.id, vc))
 
-    @commands.command(name="volume", help="Sets the playback volume (1-100)")
+    @commands.command(name="volume", aliases=["vol"], help="Sets the playback volume (1-100)")
     async def volume(self, ctx: commands.Context, level: int):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
@@ -725,7 +883,7 @@ class MusicCog(commands.Cog):
             
         await ctx.send(f"Volume set to {level}%")
 
-    @commands.command(name="shuffle", help="Shuffles the current queue")
+    @commands.command(name="shuffle", aliases=["sh"], help="Shuffles the current queue")
     async def shuffle(self, ctx: commands.Context):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
@@ -783,8 +941,13 @@ class MusicCog(commands.Cog):
             
         if tags:
             embed.add_field(name="Tags", value=tags, inline=True)
-        if subs_str:
+            
+        is_yt_music = "music.youtube.com" in url or "- Topic" in uploader
+        if subs_str and not is_yt_music:
             embed.add_field(name="Subtitles", value=subs_str, inline=True)
+        elif is_yt_music:
+            embed.add_field(name="Lyrics", value="Available via `!lyrics`", inline=True)
+            
         if formatted_date:
             embed.add_field(name="Uploaded", value=formatted_date, inline=True)
             
@@ -793,7 +956,7 @@ class MusicCog(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    @commands.command(name="queue", help="Displays the current queue")
+    @commands.command(name="queue", aliases=["q"], help="Displays the current queue")
     async def queue(self, ctx: commands.Context):
         state = self.get_state(ctx.guild.id)
         queue = state['queue']
@@ -848,9 +1011,9 @@ class MusicCog(commands.Cog):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
             return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
-        state['queue'].clear()
-        state['loopqueue'] = False
-        await ctx.send("Queue has been cleared and queue loop disabled.")
+        
+        view = ClearConfirmView(self, ctx.guild.id, ctx.author.id)
+        await ctx.send("Are you sure you want to clear the entire queue?", view=view)
 
     @commands.command(name="stop", help="Stops playback and clears the queue")
     async def stop(self, ctx: commands.Context):
@@ -959,13 +1122,71 @@ class MusicCog(commands.Cog):
         embed.set_footer(text="Outa • Youtube Music Bot", icon_url=self.bot.user.display_avatar.url if self.bot.user.display_avatar else None)
         await ctx.send(embed=embed)
 
-    @commands.command(name="subs", aliases=["subtitle", "lyrics"], help="Fetches subtitles for the currently playing track. Usage: !subs [language_code]")
+    @commands.command(name="lyrics", aliases=["ly", "lyric"], help="Fetches lyrics for the currently playing track. Usage: !lyrics [translation_lang]")
+    async def lyrics(self, ctx: commands.Context, translate_lang: str = None):
+        state = self.get_state(ctx.guild.id)
+        if not state['current_track']:
+            return await ctx.send("Nothing is currently playing.")
+            
+        track = state['current_track']
+        title = track.get('title')
+        
+        if not title:
+            return await ctx.send("Could not determine the track title.")
+            
+        await ctx.send("🔍 Fetching lyrics, please wait...", delete_after=3)
+        
+        import urllib.parse
+        base_url = "http://lyrics-api:8888/api/v2/lyrics"
+        params = {"title": title, "platform": "musixmatch"}
+        
+        if translate_lang:
+            params["translate"] = translate_lang.lower()
+            
+        query_string = urllib.parse.urlencode(params)
+        req_url = f"{base_url}?{query_string}"
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(req_url) as resp:
+                    data = await resp.json()
+                    
+                    if resp.status != 200 or "data" not in data or "lyrics" not in data.get("data", {}):
+                        err_msg = data.get("data", {}).get("message", "Lyrics not found.")
+                        return await ctx.send(f"❌ Could not fetch lyrics: {err_msg}")
+                        
+                    lyrics_text = data["data"]["lyrics"]
+                    track_name = data["data"].get("trackName", title)
+                    artist_name = data["data"].get("artistName", "Unknown Artist")
+                    
+                    header = f"**{track_name}** by **{artist_name}**"
+                    if translate_lang:
+                        header += f" (Translated: {translate_lang})"
+                        
+                    if len(lyrics_text) <= 4000:
+                        embed = discord.Embed(title=f"📜 {header}", description=lyrics_text, color=discord.Color.blue())
+                        embed.set_footer(text="Powered by LewdHuTao Lyrics API")
+                        await ctx.send(embed=embed)
+                    else:
+                        file_bytes = io.BytesIO(lyrics_text.encode("utf-8"))
+                        file = discord.File(file_bytes, filename=f"lyrics.txt")
+                        await ctx.send(f"📜 {header} (Lyrics attached due to length)", file=file)
+        except Exception as e:
+            await ctx.send(f"❌ An error occurred while fetching lyrics: {str(e)}")
+
+    @commands.command(name="subs", aliases=["subtitle"], help="Fetches subtitles for the currently playing track. Usage: !subs [language_code]")
     async def subs(self, ctx: commands.Context, lang_code: str = None):
         state = self.get_state(ctx.guild.id)
         if not state['current_track']:
             return await ctx.send("Nothing is currently playing.")
             
         track = state['current_track']
+        
+        webpage_url = track.get('webpage_url', '')
+        uploader = track.get('uploader', '')
+        if "music.youtube.com" in webpage_url or "- Topic" in uploader:
+            return await ctx.send("This track appears to be from YouTube Music. Please use the `!lyrics` command instead to get the song's lyrics.")
+            
         subs_data = track.get('subtitles_data', {})
         auto_data = track.get('auto_captions_data', {})
         
@@ -1057,12 +1278,20 @@ class MusicCog(commands.Cog):
             await self.play_next(ctx.guild.id, ctx.channel)
 
     @commands.command(name="filter", help="Applies an audio filter (e.g. bassboost, nightcore, clear)")
-    async def apply_filter(self, ctx: commands.Context, filter_name: str = "clear"):
+    async def apply_filter(self, ctx: commands.Context, filter_name: str = None):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
             return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
             
+        if filter_name is None:
+            valid_filters = ", ".join([f"`{f}`" for f in AUDIO_FILTERS.keys()])
+            current = state.get('current_filter', 'clear')
+            return await ctx.send(f"Current filter: `{current}`\nAvailable filters: {valid_filters}\nUse `!filter clear` or `!filter normal` to reset.")
+            
         filter_name = filter_name.lower()
+        if filter_name == "normal":
+            filter_name = "clear"
+            
         if filter_name not in AUDIO_FILTERS:
             valid_filters = ", ".join([f"`{f}`" for f in AUDIO_FILTERS.keys()])
             return await ctx.send(f"❌ Invalid filter. Available filters: {valid_filters}")
@@ -1080,10 +1309,14 @@ class MusicCog(commands.Cog):
             await self.execute_seek_signal(ctx.guild.id, ctx.channel, current_elapsed)
 
     @commands.command(name="speed", help="Sets the audio playback speed (0.1 - 2.0) or 'normal'/'clear' to reset")
-    async def speed(self, ctx: commands.Context, speed_input: str = "normal"):
+    async def speed(self, ctx: commands.Context, speed_input: str = None):
         state = self.get_state(ctx.guild.id)
         if not self.is_dj(ctx.author, state):
             return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
+            
+        if speed_input is None:
+            current = state.get('speed', 1.0)
+            return await ctx.send(f"Current speed: `{current}x`\nValid bounds: `0.1` to `2.0`.\nUse `!speed normal` to reset.")
             
         speed_input = speed_input.lower()
         if speed_input in ["normal", "clear"]:
@@ -1103,6 +1336,32 @@ class MusicCog(commands.Cog):
         if vc and (vc.is_playing() or vc.is_paused()):
             current_elapsed = self.get_elapsed(state)
             await self.execute_seek_signal(ctx.guild.id, ctx.channel, current_elapsed)
+    @commands.command(name="version", aliases=["ver"], help="Displays the bot version and current changelog")
+    async def version(self, ctx: commands.Context):
+        try:
+            with open("CHANGELOG.md", "r", encoding="utf-8") as f:
+                changelog_lines = f.readlines()
+            
+            current_version_lines = []
+            capturing = False
+            for line in changelog_lines:
+                if line.startswith(f"## [{BOT_VERSION}]"):
+                    capturing = True
+                    current_version_lines.append(line)
+                elif capturing and line.startswith("## ["):
+                    break
+                elif capturing:
+                    current_version_lines.append(line)
+                    
+            changelog_text = "".join(current_version_lines).strip()
+            if not changelog_text:
+                changelog_text = "No changelog found for this version."
+                
+            embed = discord.Embed(title=f"🏷️ Version {BOT_VERSION}", description=f"```markdown\n{changelog_text[:4000]}\n```", color=discord.Color.blue())
+            await ctx.send(embed=embed)
+        except Exception as e:
+            await ctx.send(f"Could not load changelog: {str(e)}")
+
 
     @commands.command(name="credit", help="Displays the creator of the bot")
     async def credit(self, ctx: commands.Context):
@@ -1119,6 +1378,7 @@ class MusicCog(commands.Cog):
         commands_dict = {
             "🎶 Playback Controls": [
                 ("▶️ `!play <query/url>`", "Plays a track or playlist."),
+                ("🔍 `!show <query>`", "Searches and shows results before playing."),
                 ("⏸️ `!pause`", "Pauses playback."),
                 ("▶️ `!resume`", "Resumes playback."),
                 ("⏹️ `!stop`", "Stops playback and clears the queue."),
@@ -1134,10 +1394,10 @@ class MusicCog(commands.Cog):
                 ("📜 `!queue`", "Displays the music queue."),
                 ("🎵 `!player` (or `!np`)", "Displays the currently playing track."),
                 ("🤖 `!autoplay [tag]`", "Toggles autoplay (optional: specific tag)."),
-                ("🎛️ `!filter <name>`", "Applies an audio filter (bassboost, nightcore, vaporwave, karaoke, 8d, clear)."),
+                ("🎛️ `!filter <name>`", "Applies an audio filter (bassboost, nightcore, vaporwave, karaoke, voice, 8d, clear)."),
                 ("🔁 `!loop`", "Toggles loop for current track."),
                 ("🔁 `!loopqueue` (or `!lq`)", "Toggles loop for the entire queue."),
-                ("🗑️ `!drop <indices>`", "Removes specific tracks (e.g., `1,3,5-7`)."),
+                ("🗑️ `!drop <indices>`", "Removes specific tracks (e.g., `1,3,5-7, last, 0`)."),
                 ("🗑️ `!clear`", "Empties the queue."),
                 ("🔀 `!shuffle`", "Shuffles the queue."),
                 ("🔄 `!move <from> <to>`", "Moves a track's position in the queue.")
@@ -1146,9 +1406,11 @@ class MusicCog(commands.Cog):
                 ("👑 `!dj`", "Shows the current DJ."),
                 ("👑 `!transfer <@user>`", "Transfers the DJ role to another user."),
                 ("💬 `!subs [lang_code]`", "Fetches subtitles/lyrics for the currently playing track."),
+                ("🎤 `!lyrics [lang]` (or `!ly`)", "Fetches lyrics for the currently playing track. Specify language to translate."),
                 ("🚪 `!quit`", "Disconnects the bot from the voice channel."),
                 ("🏓 `!ping`", "Checks the bot's latency to the server."),
-                ("✨ `!credit`", "Displays the creator of the bot & version.")
+                ("✨ `!credit`", "Displays the creator of the bot & version."),
+                ("🏷️ `!version`", "Displays the bot version and current changelog.")
             ]
         }
         

@@ -2,6 +2,27 @@
 
 All notable changes to the **Outa Music Bot** project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [1.8.1] - 2026-06-20
+### Changed
+- **Smart Lyrics Detection**: The `!player` and `!subs` commands now automatically detect if a track originates from YouTube Music. If it does, the `!player` embed hides the subtitles section and suggests using `!lyrics`, and the `!subs` command redirects users to `!lyrics`.
+
+## [1.8.0] - 2026-06-20
+### Added
+- **Lyrics API Integration**: Added a dedicated `!lyrics` (`!ly`) command to fetch track lyrics and translations.
+- **Dockerized Lyrics Service**: Integrated `LyricsApi.jar` into the `docker-compose.yml` to run locally and serve the music bot's requests.
+
+## [1.7.2] - 2026-06-20
+### Added
+- **Interactive Search**: Added `!show` (`!s`) command to search for tracks and view results in an interactive dropdown menu before playing or adding to the queue.
+- **Bot Version Command**: Added `!version` (`!ver`) command to view the current bot version and changelog.
+- **Voice Filter**: Added a `voice` filter (`!filter voice`) that isolates the mid-channel and applies a bandpass filter to emphasize vocals and reduce instruments.
+- **Command Shortcuts**: Added new aliases: `!vol` (volume), `!q` (queue), `!sk` (skip), `!sh` (shuffle).
+
+### Changed
+- **Filter and Speed Display**: Running `!filter` or `!speed` without arguments now displays the currently active setting and valid options.
+- **Queue Drop Enhancement**: `!drop` now accepts `last` or `0` to remove the very last track in the queue.
+- **Clear Confirmation**: `!clear` now prompts the DJ with an interactive Confirm/Cancel button view before wiping the queue.
+
 ## [1.7.1] - 2026-06-18
 ### Added
 - **Title Sanitization**: Introduced `clean_title` to remove invisible Unicode characters and strip trailing spaces from track titles, ensuring cleaner UI display.
