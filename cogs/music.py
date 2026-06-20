@@ -1343,21 +1343,20 @@ class MusicCog(commands.Cog):
                 changelog_lines = f.readlines()
             
             current_version_lines = []
-            capturing = False
+            versions_captured = 0
             for line in changelog_lines:
-                if line.startswith(f"## [{BOT_VERSION}]"):
-                    capturing = True
-                    current_version_lines.append(line)
-                elif capturing and line.startswith("## ["):
-                    break
-                elif capturing:
+                if line.startswith("## ["):
+                    versions_captured += 1
+                    if versions_captured > 3:
+                        break
+                if versions_captured > 0:
                     current_version_lines.append(line)
                     
             changelog_text = "".join(current_version_lines).strip()
             if not changelog_text:
-                changelog_text = "No changelog found for this version."
+                changelog_text = "No changelog found."
                 
-            embed = discord.Embed(title=f"🏷️ Version {BOT_VERSION}", description=f"```markdown\n{changelog_text[:4000]}\n```", color=discord.Color.blue())
+            embed = discord.Embed(title=f"🏷️ Version {BOT_VERSION}", description=changelog_text[:4000], color=discord.Color.blue())
             await ctx.send(embed=embed)
         except Exception as e:
             await ctx.send(f"Could not load changelog: {str(e)}")
