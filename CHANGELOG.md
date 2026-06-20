@@ -5,6 +5,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 ## [1.8.1] - 2026-06-20
 ### Changed
 - **Smart Lyrics Detection**: The `!player` and `!subs` commands now automatically detect if a track originates from YouTube Music. If it does, the `!player` embed hides the subtitles section and suggests using `!lyrics`, and the `!subs` command redirects users to `!lyrics`.
+- **Lyrics & Subs Language Hints**: Added helpful language code hints (`id`, `jp`, `rj`, `en`, `zh`, `ko`) to `!lyrics` and `!subs` command messages to make translation easier.
+- **Interactive Search Update**: The `!show` command's interactive menu now automatically deletes itself after a track is selected or when it times out (20 seconds) to keep the chat clean.
+- **Dedicated YouTube Commands**: Menambahkan command baru `!ytplay` dan `!ytshow` untuk melakukan pencarian khusus di YouTube standar. Sementara itu, command utama `!play` dan `!show` sekarang difokuskan murni untuk mencari Official Tracks di YouTube Music.
 
 ## [1.8.0] - 2026-06-20
 ### Added

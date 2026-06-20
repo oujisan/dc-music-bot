@@ -106,10 +106,11 @@ class ClearConfirmView(discord.ui.View):
 
 class SearchView(discord.ui.View):
     def __init__(self, cog, ctx, tracks):
-        super().__init__(timeout=120)
+        super().__init__(timeout=20)
         self.cog = cog
         self.ctx = ctx
         self.tracks = tracks
+        self.message = None
         
         options = []
         for i, track in enumerate(self.tracks):
@@ -132,6 +133,13 @@ class SearchView(discord.ui.View):
             
         self.add_item(self.action_button)
         
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.delete()
+            except discord.NotFound:
+                pass
+        
     async def select_callback(self, interaction: discord.Interaction):
         self.action_button.disabled = False
         await interaction.response.edit_message(view=self)
@@ -146,9 +154,12 @@ class SearchView(discord.ui.View):
         state = self.cog.get_state(self.ctx.guild.id)
         state['queue'].insert(0, track)
         
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(content=f"🎵 Playing **{track['title']}** now...", view=self)
+        try:
+            await interaction.message.delete()
+        except:
+            pass
+            
+        await interaction.response.send_message(content=f"🎵 Playing **{track['title']}** now...", delete_after=5)
         
         vc = self.ctx.guild.voice_client
         if vc and vc.is_playing():
@@ -174,9 +185,12 @@ class SearchView(discord.ui.View):
         state = self.cog.get_state(self.ctx.guild.id)
         state['queue'].append(track)
         
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(content=f"✅ Added **{track['title']}** to queue.", view=self)
+        try:
+            await interaction.message.delete()
+        except:
+            pass
+            
+        await interaction.response.send_message(content=f"✅ Added **{track['title']}** to queue.", delete_after=5)
         
         vc = self.ctx.guild.voice_client
         if not vc or not vc.is_connected():
@@ -611,8 +625,7 @@ class MusicCog(commands.Cog):
         
         vc.stop()
 
-    @commands.command(name="play", aliases=["p"], help="Plays audio from a YouTube query or URLs separated by space")
-    async def play(self, ctx: commands.Context, *, search: str):
+    async def _play_logic(self, ctx: commands.Context, search: str, platform: str = "ytm"):
         if not ctx.author.voice:
             return await ctx.send("Connection rejected: You must be in a Voice Channel.")
         
@@ -643,7 +656,10 @@ class MusicCog(commands.Cog):
                     query = q
                 else:
                     import urllib.parse
-                    query = f"https://music.youtube.com/search?q={urllib.parse.quote(q)}"
+                    if platform == "ytm":
+                        query = f"https://music.youtube.com/search?q={urllib.parse.quote(q)}"
+                    else:
+                        query = f"ytsearch1:{q}"
 
                 data = await self.bot.loop.run_in_executor(
                     None, lambda: ytdl_search.extract_info(query, download=False)
@@ -661,6 +677,8 @@ class MusicCog(commands.Cog):
                         ]
                         if not entries:
                             continue
+                        entries = [entries[0]]
+                    elif query.startswith("ytsearch"):
                         entries = [entries[0]]
                     
                     for entry in entries:
@@ -692,31 +710,43 @@ class MusicCog(commands.Cog):
         elif added_count > 0:
             asyncio.create_task(self.prefetch_next(ctx.guild.id))
 
-    @commands.command(name="show", aliases=["s"], help="Searches and shows results before playing")
-    async def show(self, ctx: commands.Context, *, search: str):
+    @commands.command(name="play", aliases=["p"], help="Plays audio from a YouTube Music query or URLs")
+    async def play(self, ctx: commands.Context, *, search: str):
+        await self._play_logic(ctx, search, platform="ytm")
+
+    @commands.command(name="ytplay", aliases=["pyt"], help="Plays audio directly from standard YouTube")
+    async def ytplay(self, ctx: commands.Context, *, search: str):
+        await self._play_logic(ctx, search, platform="yt")
+
+    async def _show_logic(self, ctx: commands.Context, search: str, platform: str = "ytm"):
         if not ctx.author.voice:
             return await ctx.send("Connection rejected: You must be in a Voice Channel.")
         
         await ctx.send(f"🔍 Searching for `{search}`...", delete_after=3)
         try:
             import urllib.parse
-            query = f"https://music.youtube.com/search?q={urllib.parse.quote(search)}"
+            if platform == "ytm":
+                query = f"https://music.youtube.com/search?q={urllib.parse.quote(search)}"
+            else:
+                query = f"ytsearch10:{search}"
+
             data = await self.bot.loop.run_in_executor(
                 None, lambda: ytdl_search.extract_info(query, download=False)
             )
             
             if 'entries' in data:
                 entries = [entry for entry in list(data['entries']) if entry]
-                entries = [
-                    entry for entry in entries 
-                    if (entry.get('title') is not None) and ('watch?v=' in (entry.get('url') or entry.get('webpage_url') or ''))
-                ]
+                if platform == "ytm":
+                    entries = [
+                        entry for entry in entries 
+                        if (entry.get('title') is not None) and ('watch?v=' in (entry.get('url') or entry.get('webpage_url') or ''))
+                    ]
                 
                 if not entries:
                     return await ctx.send("No playable results found.")
                 
                 tracks = []
-                for entry in entries[:5]:
+                for entry in entries[:10]:
                     webpage_url = entry.get('url') or entry.get('webpage_url')
                     title = clean_title(entry.get('title'))
                     tracks.append({'webpage_url': webpage_url, 'title': title})
@@ -729,13 +759,21 @@ class MusicCog(commands.Cog):
                     embed.add_field(name=f"{i+1}. {track['title']}", value=f"[Link]({track['webpage_url']})", inline=False)
                     
                 view = SearchView(self, ctx, tracks)
-                await ctx.send(embed=embed, view=view)
+                view.message = await ctx.send(embed=embed, view=view)
             else:
                 await ctx.send("No results found.")
         except Exception as e:
             import traceback
             traceback.print_exc()
             await ctx.send(f"Failed to search: {str(e)}")
+
+    @commands.command(name="show", aliases=["s"], help="Searches YouTube Music and shows results")
+    async def show(self, ctx: commands.Context, *, search: str):
+        await self._show_logic(ctx, search, platform="ytm")
+
+    @commands.command(name="ytshow", aliases=["syt"], help="Searches standard YouTube and shows results")
+    async def ytshow(self, ctx: commands.Context, *, search: str):
+        await self._show_logic(ctx, search, platform="yt")
 
     @commands.command(name="pause", help="Pauses current playback")
     async def pause(self, ctx: commands.Context):
@@ -1156,7 +1194,8 @@ class MusicCog(commands.Cog):
         if not search_title:
             search_title = raw_title
             
-        await ctx.send(f"🔍 Fetching lyrics for `{search_title}`, please wait...", delete_after=3)
+        hint = "*(Tips: `!ly id`=Indo, `jp`=Japan, `rj`=Romaji, `en`=English, `zh`=Chinese, `ko`=Korea)*"
+        await ctx.send(f"🔍 Fetching lyrics for `{search_title}`, please wait...\n{hint}", delete_after=5)
         
         import urllib.parse
         base_url = "http://lyrics-api:8888/api/v2/lyrics"
@@ -1217,7 +1256,8 @@ class MusicCog(commands.Cog):
             
         if not lang_code:
             available = list(subs_data.keys()) + [f"{k} (auto)" for k in auto_data.keys()]
-            return await ctx.send(f"Please provide a language code (e.g., `!subs en`).\nAvailable languages: {', '.join(available[:20])}")
+            hint = "**Codes:** `id`=Indo | `jp`=Japan | `rj`=JP Romanized | `en`=English | `zh`=Chinese (Simplified) | `ko`=Korea\n"
+            return await ctx.send(f"Please provide a language code (e.g., `!subs en`).\n{hint}Available languages: {', '.join(available[:20])}")
             
         lang_code = lang_code.lower()
         sub_list = subs_data.get(lang_code) or auto_data.get(lang_code)
@@ -1398,8 +1438,10 @@ class MusicCog(commands.Cog):
     async def help_command(self, ctx: commands.Context):
         commands_dict = {
             "🎶 Playback Controls": [
-                ("▶️ `!play <query/url>`", "Plays a track or playlist."),
-                ("🔍 `!show <query>`", "Searches and shows results before playing."),
+                ("▶️ `!play <query/url>`", "Plays a track (Defaults to YouTube Music)."),
+                ("📺 `!ytplay <query>`", "Plays a track directly from standard YouTube."),
+                ("🔍 `!show <query>`", "Shows results from YouTube Music before playing."),
+                ("🔎 `!ytshow <query>`", "Shows results from standard YouTube before playing."),
                 ("⏸️ `!pause`", "Pauses playback."),
                 ("▶️ `!resume`", "Resumes playback."),
                 ("⏹️ `!stop`", "Stops playback and clears the queue."),
@@ -1426,8 +1468,8 @@ class MusicCog(commands.Cog):
             "⚙️ Session & Utilities": [
                 ("👑 `!dj`", "Shows the current DJ."),
                 ("👑 `!transfer <@user>`", "Transfers the DJ role to another user."),
-                ("💬 `!subs [lang_code]`", "Fetches subtitles/lyrics for the currently playing track."),
-                ("🎤 `!lyrics [lang]` (or `!ly`)", "Fetches lyrics for the currently playing track. Specify language to translate."),
+                ("💬 `!subs [lang_code]`", "Fetches subtitles. Common codes: `id`, `jp`, `rj`, `en`, `zh`, `ko`."),
+                ("🎤 `!lyrics [lang]` (or `!ly`)", "Fetches lyrics. Common codes: `id`=Indo, `jp`=Japan, `rj`=Romaji, `en`=Eng, `zh`=Chinese, `ko`=Korea."),
                 ("🚪 `!quit`", "Disconnects the bot from the voice channel."),
                 ("🏓 `!ping`", "Checks the bot's latency to the server."),
                 ("✨ `!credit`", "Displays the creator of the bot & version."),
