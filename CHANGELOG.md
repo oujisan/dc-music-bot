@@ -2,6 +2,18 @@
 
 All notable changes to the **Outa Music Bot** project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.9.1] - 2026-06-26
+### Added
+- **New Command**: Added `!new` (`!latest`, `!update`) command to display the latest changelog and current bot version.
+### Changed
+- **Cleaned up code**: Removed unused imports and code.
+
+## [1.9.0] - 2026-06-23
+### Changed
+- **Autoplay Removed**: The background `autoplay` mechanism (and the `!autoplay` command) has been completely removed to simplify queue management. The bot will now respect the exact tracks requested and will automatically disconnect after the queue is empty and the inactivity timer expires.
+- **Mix Command Overhaul**: The `!mix <query>` (or `!m`) command has been repurposed. Instead of starting an endless autoplay loop, it now acts as a batch importer. It immediately searches and fetches the top 10 tracks matching the given artist or genre and queues them all at once.
+
 ## [1.8.1] - 2026-06-20
 ### Changed
 - **Smart Lyrics Detection**: The `!player` and `!subs` commands now automatically detect if a track originates from YouTube Music. If it does, the `!player` embed hides the subtitles section and suggests using `!lyrics`, and the `!subs` command redirects users to `!lyrics`.

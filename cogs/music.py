@@ -11,7 +11,7 @@ import io
 import re
 from config import YTDL_SEARCH_OPTIONS, YTDL_STREAM_OPTIONS, FFMPEG_OPTIONS
 
-BOT_VERSION = "1.8.1"
+BOT_VERSION = "1.9.0"
 
 ytdl_search = yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS)
 ytdl_stream = yt_dlp.YoutubeDL(YTDL_STREAM_OPTIONS)
@@ -237,11 +237,8 @@ class MusicCog(commands.Cog):
                 'now_playing_message': None,
                 'bound_channel': None,
                 'session_owner': None,
-                'autoplay': False,
-                'autoplay_query': None,
                 'played_history': [],
                 'current_filter': "clear",
-                'autoplay_failures': 0,
                 'speed': 1.0,
                 'http_headers': {}
             }
@@ -328,19 +325,7 @@ class MusicCog(commands.Cog):
             current_track = state.get('current_track')
             
             elapsed = time.time() - state.get('start_time', 0)
-            if elapsed < 3 and not state.get('is_skipping') and not state.get('is_replaying') and not state.get('is_seeking'):
-                state['autoplay_failures'] = state.get('autoplay_failures', 0) + 1
-                if state.get('autoplay') and state['autoplay_failures'] >= 3:
-                    state['autoplay'] = False
-                    asyncio.run_coroutine_threadsafe(
-                        channel.send("⚠️ Autoplay automatically disabled due to 3 consecutive track failures."),
-                        self.bot.loop
-                    )
-                    state['autoplay_failures'] = 0
-                    return
-            elif elapsed >= 3:
-                state['autoplay_failures'] = 0
-
+            
             if current_track:
                 old_prev = state.get('previous_track')
                 state['previous_track'] = current_track
@@ -365,43 +350,6 @@ class MusicCog(commands.Cog):
         state = self.get_state(guild_id)
         queue = state['queue']
         vc = self.bot.get_guild(guild_id).voice_client
-        
-        if len(queue) == 0 and state.get('autoplay') and not state.get('is_skipping') and not state.get('is_replaying'):
-            try:
-                search_query = "top music mix"
-                if state.get('autoplay_query'):
-                    search_query = f"{state['autoplay_query']} music"
-                elif state.get('previous_track'):
-                    prev = state['previous_track']
-                    if prev.get('tags'):
-                        first_tag = prev['tags'].split(',')[0].strip()
-                        search_query = f"{first_tag} music"
-                    elif prev.get('uploader') and prev['uploader'] != 'Unknown Artist':
-                        search_query = f"{prev['uploader']} mix"
-                    else:
-                        search_query = f"{prev['title']} mix"
-
-                import urllib.parse
-                query = f"https://music.youtube.com/search?q={urllib.parse.quote(search_query)}"
-                data = await self.bot.loop.run_in_executor(
-                    None, lambda: ytdl_search.extract_info(query, download=False)
-                )
-                if 'entries' in data and data['entries']:
-                    entries = [e for e in data['entries'] if e]
-                    # Filter to only actual track/video results from YouTube Music search
-                    entries = [
-                        e for e in entries 
-                        if (e.get('title') is not None) and ('watch?v=' in (e.get('url') or e.get('webpage_url') or ''))
-                    ]
-                    if entries:
-                        history = state.get('played_history', [])
-                        unplayed = [e for e in entries if e.get('url', e.get('webpage_url')) not in history]
-                        track = random.choice(unplayed) if unplayed else random.choice(entries)
-                        
-                        webpage_url = track.get('url') or track.get('webpage_url')
-                        queue.append({'webpage_url': webpage_url, 'title': clean_title(track.get('title'))})
-            except Exception:
-                pass
         
         if len(queue) > 0:
             self.cancel_timeout(guild_id)
@@ -548,12 +496,6 @@ class MusicCog(commands.Cog):
                 state['now_playing_message'] = await channel.send(embed=embed)
                 
             except Exception as e:
-                state['autoplay_failures'] = state.get('autoplay_failures', 0) + 1
-                if state.get('autoplay') and state['autoplay_failures'] >= 3:
-                    state['autoplay'] = False
-                    await channel.send("⚠️ Autoplay automatically disabled due to 3 consecutive track failures.")
-                    state['autoplay_failures'] = 0
-                    return
                 await channel.send(f"Failed to play **{item['title']}**: Skipping...")
                 await asyncio.sleep(1)
                 await self.play_next(guild_id, channel)
@@ -717,6 +659,56 @@ class MusicCog(commands.Cog):
     @commands.command(name="ytplay", aliases=["pyt"], help="Plays audio directly from standard YouTube")
     async def ytplay(self, ctx: commands.Context, *, search: str):
         await self._play_logic(ctx, search, platform="yt")
+
+    @commands.command(name="mix", aliases=["m"], help="Queues a mix of tracks based on an artist or genre")
+    async def mix(self, ctx: commands.Context, *, query: str):
+        state = self.get_state(ctx.guild.id)
+        if not ctx.author.voice:
+            return await ctx.send("Connection rejected: You must be in a Voice Channel.")
+            
+        vc = ctx.guild.voice_client
+        if not vc:
+            await ctx.author.voice.channel.connect()
+            vc = ctx.guild.voice_client
+            state['session_owner'] = ctx.author.id
+
+        state['bound_channel'] = ctx.channel
+        
+        await ctx.send(f"📻 **Starting Mix for `{query}`**...", delete_after=10)
+        
+        import urllib.parse
+        search_query = f"https://music.youtube.com/search?q={urllib.parse.quote(query)}"
+        
+        try:
+            data = await self.bot.loop.run_in_executor(
+                None, lambda: ytdl_search.extract_info(search_query, download=False)
+            )
+            
+            added_count = 0
+            if 'entries' in data:
+                entries = [entry for entry in list(data['entries']) if entry]
+                entries = [
+                    entry for entry in entries 
+                    if (entry.get('title') is not None) and ('watch?v=' in (entry.get('url') or entry.get('webpage_url') or ''))
+                ]
+                
+                for entry in entries[:10]:
+                    webpage_url = entry.get('url') or entry.get('webpage_url')
+                    title = clean_title(entry.get('title'))
+                    state['queue'].append({'webpage_url': webpage_url, 'title': title})
+                    added_count += 1
+            
+            if added_count > 0:
+                await ctx.send(f"✅ Added **{added_count}** tracks to the queue.")
+                self.cancel_timeout(ctx.guild.id)
+                if not vc.is_playing() and not vc.is_paused():
+                    await self.play_next(ctx.guild.id, ctx.channel)
+                else:
+                    asyncio.create_task(self.prefetch_next(ctx.guild.id))
+            else:
+                await ctx.send("No results found to start the mix.")
+        except Exception as e:
+            await ctx.send(f"Failed to start mix: {str(e)}")
 
     async def _show_logic(self, ctx: commands.Context, search: str, platform: str = "ytm"):
         if not ctx.author.voice:
@@ -1317,28 +1309,6 @@ class MusicCog(commands.Cog):
         except Exception as e:
             await ctx.send(f"An error occurred while fetching subtitles: {str(e)}")
 
-    @commands.command(name="autoplay", aliases=["ap"], help="Toggles autoplay and sets an optional tag")
-    async def autoplay(self, ctx: commands.Context, *, tag: str = None):
-        state = self.get_state(ctx.guild.id)
-        if not self.is_dj(ctx.author, state):
-            return await ctx.send("Only the person who requested the first track (or an Admin) can control the bot.")
-        
-        if tag:
-            state['autoplay'] = True
-            state['autoplay_query'] = tag
-            await ctx.send(f"🤖 **Autoplay is now ON**. Tag targeted to: `{tag}`")
-        else:
-            state['autoplay'] = not state.get('autoplay', False)
-            state['autoplay_query'] = None
-            if state['autoplay']:
-                await ctx.send("🤖 **Autoplay is now ON**. The bot will play recommended songs automatically.")
-            else:
-                await ctx.send("🤖 **Autoplay is now OFF**.")
-                
-        vc = ctx.guild.voice_client
-        if state['autoplay'] and len(state['queue']) == 0 and vc and not vc.is_playing() and not vc.is_paused():
-            await self.play_next(ctx.guild.id, ctx.channel)
-
     @commands.command(name="filter", help="Applies an audio filter (e.g. bassboost, nightcore, clear)")
     async def apply_filter(self, ctx: commands.Context, filter_name: str = None):
         state = self.get_state(ctx.guild.id)
@@ -1398,6 +1368,31 @@ class MusicCog(commands.Cog):
         if vc and (vc.is_playing() or vc.is_paused()):
             current_elapsed = self.get_elapsed(state)
             await self.execute_seek_signal(ctx.guild.id, ctx.channel, current_elapsed)
+    @commands.command(name="new", aliases=["latest", "update"], help="Displays the latest changelog and current version")
+    async def new_changes(self, ctx: commands.Context):
+        try:
+            with open("CHANGELOG.md", "r", encoding="utf-8") as f:
+                changelog_lines = f.readlines()
+            
+            latest_version_lines = []
+            versions_captured = 0
+            for line in changelog_lines:
+                if line.startswith("## ["):
+                    versions_captured += 1
+                    if versions_captured > 1:
+                        break
+                if versions_captured > 0:
+                    latest_version_lines.append(line)
+                    
+            changelog_text = "".join(latest_version_lines).strip()
+            if not changelog_text:
+                changelog_text = "No changelog found."
+                
+            embed = discord.Embed(title=f"🆕 Latest Changes (v{BOT_VERSION})", description=changelog_text[:4000], color=discord.Color.green())
+            await ctx.send(embed=embed)
+        except Exception as e:
+            await ctx.send(f"Could not load changelog: {str(e)}")
+
     @commands.command(name="version", aliases=["ver"], help="Displays the bot version and current changelog")
     async def version(self, ctx: commands.Context):
         try:
@@ -1440,6 +1435,7 @@ class MusicCog(commands.Cog):
             "🎶 Playback Controls": [
                 ("▶️ `!play <query/url>`", "Plays a track (Defaults to YouTube Music)."),
                 ("📺 `!ytplay <query>`", "Plays a track directly from standard YouTube."),
+                ("📻 `!mix <query>` (or `!m`)", "Queues a mix of 10 tracks based on an artist or genre."),
                 ("🔍 `!show <query>`", "Shows results from YouTube Music before playing."),
                 ("🔎 `!ytshow <query>`", "Shows results from standard YouTube before playing."),
                 ("⏸️ `!pause`", "Pauses playback."),
@@ -1456,7 +1452,6 @@ class MusicCog(commands.Cog):
             "📜 Queue Management": [
                 ("📜 `!queue`", "Displays the music queue."),
                 ("🎵 `!player` (or `!np`)", "Displays the currently playing track."),
-                ("🤖 `!autoplay [tag]`", "Toggles autoplay (optional: specific tag)."),
                 ("🎛️ `!filter <name>`", "Applies an audio filter (bassboost, nightcore, vaporwave, karaoke, voice, 8d, clear)."),
                 ("🔁 `!loop`", "Toggles loop for current track."),
                 ("🔁 `!loopqueue` (or `!lq`)", "Toggles loop for the entire queue."),
@@ -1473,7 +1468,8 @@ class MusicCog(commands.Cog):
                 ("🚪 `!quit`", "Disconnects the bot from the voice channel."),
                 ("🏓 `!ping`", "Checks the bot's latency to the server."),
                 ("✨ `!credit`", "Displays the creator of the bot & version."),
-                ("🏷️ `!version`", "Displays the bot version and current changelog.")
+                ("🏷️ `!version`", "Displays the bot version and current changelog."),
+                ("🆕 `!new` (or `!latest`)", "Displays the latest changelog and current version.")
             ]
         }
         
